@@ -1,0 +1,182 @@
+---
+name: lthr-multi-sample-report
+version: 3.2.1
+description: "乳酸阈(LTHR)多样本仿真报告全流程编排与发布。适用于报告生成、对比报告、SDK版本对比、三源对比(Garmin/DUT/SDK)、garmin对比、仿真报告、多轮仿真一致性分析、Lark Base 读写、BASE_CASE/JIRA_CASE 解析、飞书文档发布、发飞书、群通知和归档。新 SDK 发布后一键完成。"
+metadata:
+  requires:
+    bins: ["lark-cli", "zepp", "python3"]
+---
+
+# LTHR Multi-Sample Report
+
+> 前置条件：CWD 在 Lyon 项目根目录。所有脚本参数详 `--help`。
+> 新增：JIRA CASE 工作流需安装 zepp CLI（`curl -fsSL https://upload-cdn.zepp.com/other/zepp-cli/install.sh | bash`）。
+
+## 使用场景
+
+- 用户要求“生成仿真报告”“出对比报告”“做 SDK 版本对比”。
+- 用户要求“做三源对比”“看 garmin 对比”“分析多轮仿真一致性”。
+- 用户要求“把 BASE_CASE/JIRA_CASE 数据写到 Lark Base”“从 Base 拉数据”。
+- 用户要求“把报告发飞书”“发群通知”“做归档发布”。
+
+## 凭证固化（免重复输入）
+
+Base token、table-id 等常用凭证已固化到 `scripts/_pipeline_config.py` 中，来自此前对话的实际值。你可以直接运行以下简化命令，无需每次传递 `--base-token` / `--table-id` / `--base-template`：
+
+如需更新凭证（如补全 `--gomore-folder` / `--chat-id`），编辑 `scripts/_pipeline_config.py` 即可。
+
+## 快速启动
+
+```bash
+# 一键全流程（简化版，凭证已固化到 skill 中）
+python3 scripts/run_pipeline.py \
+  --offline-summary /tmp/lthr_multi_sim/device_multi_sim_<stamp>.json
+
+# 或者指定日志文件
+python3 scripts/run_pipeline.py \
+  --log-file /path/to/lyon_xxx.log
+
+# 全量显式版（可覆盖固化配置）
+python3 scripts/run_pipeline.py \
+  --log-file /path/to/lyon_xxx.log \
+  --base-token <token> --table-id <id> \
+  --base-template <源token> --gomore-folder <文件夹token> \
+  --chat-id oc_xxxx
+
+# JIRA CASE 全流程（步骤11-14）
+python3 scripts/run_pipeline.py \
+  --log-file /path/to/lyon_xxx.log --sdk-ver 1.0.16.0 \
+  --jira-issues COLOGNE-3107 MAT-13034 MOD-7798 MOD-8699 WIN-1957 WIN-2552 \
+  --steps 11-14
+
+# JIRA CASE + BASE CASE 全流程
+python3 scripts/run_pipeline.py \
+  --log-file /path/to/lyon_xxx.log --sdk-ver 1.0.16.0 \
+  --base-token X --table-id Y \
+  --jira-issues COLOGNE-3107 MAT-13034 MOD-7798 MOD-8699 WIN-1957 WIN-2552 \
+  --steps 1-14
+
+# 干跑预览
+python3 scripts/run_pipeline.py --sdk-ver 1.0.15.0 --dry-run
+
+# 局部步骤
+python3 scripts/run_pipeline.py --sdk-ver 1.0.15.0 --json data.json --steps 4-6
+
+# 直接消费 lthr-offline-simulator 多样本输出
+python3 scripts/run_pipeline.py \
+  --offline-summary /tmp/lthr_multi_sim/device_multi_sim_20260512_101530.json \
+  --steps 1,4-6
+
+# 自动识别 summary 对应日志里的 BASE_CASE / JIRA_CASE，未显式传 --steps 时自动选择 1-10 / 11-14 / 1-14
+python3 scripts/run_pipeline.py \
+  --offline-summary /tmp/lthr_multi_sim/device_multi_sim_20260512_101530.json
+```
+
+说明：传 `--offline-summary` 时，pipeline 会优先读取 summary 里的 `artifacts.log_path` 作为解析输入，且默认把中间 JSON 和报告输出到该 summary 所在目录；这样多样本仿真和报告产物会落在同一处，无需再手工搬运日志。
+
+说明：`--offline-summary` 模式下，如果没有显式传 `--steps`，pipeline 会先扫描 raw log 中的 `CASE=BASE_CASE` / `CASE=JIRA_CASE`：
+
+- 只有 `BASE_CASE`：自动执行 `1-10`
+- 只有 `JIRA_CASE`：自动执行 `11-14`
+- 同时包含两者：自动执行 `1-14`
+
+说明：JIRA 路径在未显式传 `--jira-issues` 时，会优先从 `jira_samples_<sdk>.json` 推断；若还没有该文件，则回退到 raw log 的 `JIRA_CASE SAMPLE_DIR=` 记录自动恢复 issue 列表。
+
+## 实战约定（2026-05-18 已验证）
+
+- 对同时包含 `BASE_CASE` 和 `JIRA_CASE` 的混合日志，如果只想生成本地报告，不要直接让 `--offline-summary` 走默认步骤；当前安全命令是：
+
+```bash
+python3 scripts/run_pipeline.py \
+  --offline-summary /tmp/lthr_multi_sim/device_multi_sim_<stamp>.json \
+  --steps 1,4,5,11-13
+```
+
+这样只会生成 BASE 三源报告、单版本仿真报告和 JIRA 对比报告，不会写 Base、发布飞书或发送群通知。
+
+- 对已经生成好的混合日志报告，如果只想“发布飞书 + 归档”，但明确不要群通知，使用：
+
+```bash
+python3 scripts/run_pipeline.py \
+  --offline-summary /tmp/lthr_multi_sim/device_multi_sim_<stamp>.json \
+  --steps 2,7,9,14
+```
+
+其中步骤 2 写 Base，步骤 7 发布 BASE 三源报告，步骤 9 归档日志，步骤 14 发布 JIRA 对比报告；不要带步骤 10。
+
+- GoMore multi-sample 日志里的用户性别编码按模板 Base 校验后应解释为：`gender=0 -> 男`、`gender=1 -> 女`。不要沿用常见的 `1=男` 映射，否则 SDK 仿真报告和 JIRA 对比报告中的性别会整体反掉。
+
+## 脚本速查
+
+| 脚本 | 位置 | 功能 |
+|------|------|------|
+| `run_pipeline.py` | `skills/lthr-*/scripts/` | 全流程编排器（推荐入口） |
+| `parse_gomore_samples.py` | `skills/lthr-*/scripts/` | 日志→JSON/CSV（支持 BASE_CASE / JIRA_CASE） |
+| `feishu_base_utils.py` | `skills/lthr-*/scripts/` | Base 读写封装 |
+| `generate_garmin_dut_compare_report.py` | `skills/lthr-*/scripts/` | 三源 (Garmin/DUT/SDK) 对比报告 |
+| `generate_sim_report.py` | `skills/lthr-*/scripts/` | 单版本仿真报告 |
+| `compare_base_samples.py` | `skills/lthr-*/scripts/` | 两版 SDK 对比报告 |
+| `fetch_jira_baseline.py` | `skills/lthr-*/scripts/` | 从 JIRA 评论提取旧版 SDK 基准值 |
+| `generate_jira_report.py` | `skills/lthr-*/scripts/` | 生成 JIRA CASE 新旧 SDK 对比报告 |
+
+## 14 步标准流程
+
+### BASE CASE 工作流（步骤 1-10）
+
+| # | 操作 | run_pipeline 对应参数 |
+|:-:|------|----------------------|
+| 1 | 解析日志提取 BASE_CASE 样本 | `--log-file path --case BASE_CASE` |
+| 2 | 写入飞书 Base | `--base-token X --table-id Y` |
+| 3 | 拉取 Base 全表 | （pipeline 自动执行） |
+| 4 | 三源对比报告 | `scripts/generate_garmin_dut_compare_report.py --help` |
+| 5 | 单版本仿真报告 | `scripts/generate_sim_report.py --help` |
+| 6 | 版本对比报告 | `--prev-ver 1.0.9` |
+| 7 | 发布飞书文档 | （pipeline 自动执行） |
+| 8 | 复制并归档 Base | `--base-template X` |
+| 9 | 归档日志 | `--gomore-folder Y` |
+| 10 | 群通知 | `--chat-id oc_xxx` |
+
+### JIRA CASE 工作流（步骤 11-14）
+
+| # | 操作 | run_pipeline 对应参数 |
+|:-:|------|----------------------|
+| 11 | 从日志解析 JIRA_CASE 样本 | `--jira-issues ISSUE1 ISSUE2 ...` |
+| 12 | 从 JIRA 评论提取旧版 SDK 基准值 | （自动执行 `fetch_jira_baseline.py`） |
+| 13 | 生成新旧 SDK 对比报告 | （自动执行 `generate_jira_report.py`） |
+| 14 | 发布对比报告到飞书文档 | （pipeline 自动执行） |
+
+### 注意事项
+
+- **JIRA CASE 样本名**: 格式为 `ISSUE_KEY/filename`（如 `COLOGNE-3107/gomore_data_20260320_110740`），一个 Issue 可对应多个 CSV 文件。
+- **单轮次仿真**: 大多数 JIRA CASE 只有 1 轮仿真结果（日志中有且仅有 `Round 1` 输出），报告会自动调整对比格式。
+- **MAT-13034 特殊格式**: 该 Issue 的评论中 lh/mh 值含有 Jira Wiki 标记 `{color:#DE350B}`，提取脚本已自动兼容处理。
+- **WIN-1957**: 该 Issue 评论中无 `Result #` 行（旧版未出值），报告将显示"无基准数据"。
+- **基准值提取**: `fetch_jira_baseline.py` 通过 `zepp jira comment list` 提取，确保已安装 zepp CLI 并登录。
+
+## 数据文件约定
+
+| 类型 | 路径 |
+|------|------|
+| 日志 | `framework/engine/sportEngine/alg_gomore/data_sample/` |
+| offline-simulator 多样本摘要 | `device_multi_sim_<stamp>.json` |
+| 样本 JSON | `data_sample/base_case_updates_*.json` |
+| 三源报告 | `data_sample/garmin_dut_sim_compare_report_*.md` |
+| 仿真报告 | `data_sample/sdk_*_sim_report.md` |
+| 版本对比 | `data_sample/sdk_*_vs_*_compare_report.md` |
+| JIRA 样本 JSON | `data_sample/jira_samples_<sdk_ver>.json` |
+| JIRA 基准 JSON | `data_sample/jira_baseline_<sdk_ver>.json` |
+| JIRA 对比报告 | `data_sample/jira_compare_report_<sdk_ver>.md` |
+
+使用 `--offline-summary` 时，上述 `samples_*.json` / `base_data_*.json` / `sdk_*_sim_report.md` 会默认输出到 summary 同目录；不传时仍保持原来的 `data_sample/` 默认行为。
+
+在 `BASE_CASE + JIRA_CASE` 混合日志场景下，推荐直接用 `--offline-summary` 且不传 `--steps`，让 pipeline 自动串起两套报告；只有在你明确只想跑其中一侧时，才显式写 `--steps 1-10` 或 `--steps 11-14`。
+
+## FAQ
+
+**Q: Base 写入 ignored_fields？** 字段来自同步数据源为只读，需在飞书网页端取消同步后再写入。
+
+**Q: table_id 怎么看？** Base 网页 URL 中 `?table=` 参数的值。或 `lark-cli base +field-list --base-token X`。
+
+## 权限
+
+> 使用 `lark-cli` 操作，需要 `base:record` / `docs:document` / `im:message` 等 scope。详见 lark-shared skill。
