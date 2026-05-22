@@ -46,7 +46,7 @@ RE_USER_INFO = re.compile(
     re.IGNORECASE,
 )
 RE_BASE_LINE = re.compile(
-    r"(?:gomoreParseUGCallback|Gomore\s+output)\s+ltSpeed\s*=\s*([\d.]+)\s*lh\s*=\s*([\d.]+)\s*mh\s*=\s*([\d.]+)",
+    r"(?:gomoreParseUGCallback|Gomore\s+output)\s+ltSpeed\s*=\s*([-+]?\d+(?:\.\d+)?)\s*lh\s*=\s*([-+]?\d+(?:\.\d+)?)\s*mh\s*=\s*([-+]?\d+(?:\.\d+)?)",
     re.IGNORECASE,
 )
 
@@ -56,6 +56,26 @@ RE_ROUND_MARKER = re.compile(
 )
 
 RE_220_AGE = re.compile(r"220[\s-]*age\s*(?:[:=]\s*|\s+)(\d+)", re.IGNORECASE)
+
+
+def _speed_kph_to_pace_seconds(speed_kph: float) -> Optional[int]:
+    """将 km/h 速度换算为配速秒数 (s/km)。"""
+    if speed_kph <= 0:
+        return None
+    return int(round(3600.0 / speed_kph))
+
+
+def _pace_seconds_to_text(pace_seconds: Optional[int]) -> Optional[str]:
+    """将配速秒数格式化为 m'ss。"""
+    if pace_seconds is None:
+        return None
+    pace_min, pace_sec = divmod(int(pace_seconds), 60)
+    return f"{pace_min}'{pace_sec:02d}"
+
+
+def _format_invalid_round_status(lt_speed: float, lh: float, mh: float) -> str:
+    """记录无效出值，供报告说明为什么没有可对比轮次。"""
+    return f"invalid_result: ltSpeed={lt_speed:.3f}, lh={int(lh)}, mh={int(mh)}"
 
 
 def parse_log(filepath: str, case_filter: str = "BASE_CASE", with_group: bool = False) -> dict:
@@ -126,18 +146,23 @@ def parse_log(filepath: str, case_filter: str = "BASE_CASE", with_group: bool = 
             s = samples[current_sample]
             prefix = f"仿真{current_round}"
 
-            # ltSpeed (pace 转分:秒格式)
-            lt_val = float(lt_speed)
-            lt_min = int(lt_val)
-            lt_sec = int(round((lt_val - lt_min) * 60))
-            s[f"{prefix}_LTP"] = f"{lt_min}'{lt_sec:02d}"
-            s[f"{prefix}_LTP（S）"] = int(lt_val * 60)
+            # 日志中的 ltSpeed 是 km/h，需要先换算成配速后再落到 LTP 字段。
+            lt_speed_kph = float(lt_speed)
+            lh_val = float(lh)
+            mh_val = float(mh)
+            if lt_speed_kph <= 0 or lh_val <= 0 or mh_val <= 0:
+                s[f"{prefix}_状态"] = _format_invalid_round_status(lt_speed_kph, lh_val, mh_val)
+                continue
+
+            lt_pace_seconds = _speed_kph_to_pace_seconds(lt_speed_kph)
+            s[f"{prefix}_LTP"] = _pace_seconds_to_text(lt_pace_seconds)
+            s[f"{prefix}_LTP（S）"] = lt_pace_seconds
 
             # LTHR = lh
-            s[f"{prefix}_LTHR"] = int(float(lh))
+            s[f"{prefix}_LTHR"] = int(lh_val)
 
             # MAXHR = mh
-            s[f"{prefix}_MAXHR"] = int(float(mh))
+            s[f"{prefix}_MAXHR"] = int(mh_val)
             continue
 
     # 填充缺失轮次为 None（让所有样本有相同的键）
@@ -150,7 +175,7 @@ def _fill_missing_rounds(samples: dict, max_round: int = 3) -> None:
     for sname, sdata in samples.items():
         for rnd in range(1, max_round + 1):
             p = f"仿真{rnd}"
-            for k in ("_LTHR", "_LTP（S）", "_MAXHR", "_LTP"):
+            for k in ("_LTHR", "_LTP（S）", "_MAXHR", "_LTP", "_状态"):
                 key = p + k
                 if key not in sdata:
                     sdata[key] = None

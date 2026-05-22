@@ -21,6 +21,36 @@ SendUartFn = Callable[[Path, str, str, int], str]
 ListenUartFn = Callable[[Path, str, int], str]
 TimeFn = Callable[[], float]
 ProgressCallback = Callable[[Dict[str, int]], None]
+StateCallback = Callable[[Dict[str, object], str], None]
+
+
+def build_runtime_state(
+    full_log: str,
+    progress: Dict[str, int],
+    *,
+    started: bool,
+    ended: bool,
+    total_runtime: float,
+) -> Dict[str, object]:
+    counts = collect_summary_counts(full_log, progress)
+    if ended:
+        status = "completed"
+    elif started:
+        status = "running"
+    else:
+        status = "waiting_for_test_activity"
+
+    return {
+        "status": status,
+        "started": started,
+        "ended": ended,
+        "total_samples": counts["total_samples"],
+        "passed": counts["passed"],
+        "failed": counts["failed"],
+        "runtime_seconds": round(total_runtime),
+        "log_size_bytes": len(full_log),
+        "progress": dict(progress),
+    }
 
 
 def has_test_activity(text: str) -> bool:
@@ -88,6 +118,7 @@ def run_multi_sample_simulation(
     run_timeout_sec: int,
     listen_chunk_sec: int,
     progress_callback: Optional[ProgressCallback] = None,
+    state_callback: Optional[StateCallback] = None,
     send_uart_cmd_fn: SendUartFn = send_uart_cmd,
     listen_uart_fn: ListenUartFn = listen_uart,
     time_fn: TimeFn = time.time,
@@ -110,6 +141,18 @@ def run_multi_sample_simulation(
     progress = init_progress()
     deadline = time_fn() + run_timeout_sec
 
+    if state_callback:
+        state_callback(
+            build_runtime_state(
+                full_log,
+                progress,
+                started=started,
+                ended=ended,
+                total_runtime=time_fn() - run_started_at,
+            ),
+            full_log,
+        )
+
     while time_fn() < deadline and not ended:
         chunk_sec = max(1, min(listen_chunk_sec, int(deadline - time_fn()) or 1))
         chunk = listen_uart_fn(wlctl_path, uart_port, chunk_sec)
@@ -125,6 +168,20 @@ def run_multi_sample_simulation(
 
         if END_MARKER in chunk:
             ended = True
+
+        if state_callback:
+            state_callback(
+                build_runtime_state(
+                    full_log,
+                    progress,
+                    started=started,
+                    ended=ended,
+                    total_runtime=time_fn() - run_started_at,
+                ),
+                full_log,
+            )
+
+        if END_MARKER in chunk:
             break
 
     total_runtime = time_fn() - run_started_at

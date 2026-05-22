@@ -267,17 +267,34 @@ def resolve_offline_summary(args) -> None:
 def extract_sdk_version(log_file: str) -> str:
     """从日志中提取 GoMore SDK 版本号 (格式 X.X.X.X)。"""
     re_ver = re.compile(r"(?:GoMore\s+)?SDK\s+(?:Version|Version String):?\s*(\d+\.\d+\.\d+\.\d+)", re.IGNORECASE)
+    matches = []
     try:
         with open(log_file, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 match = re_ver.search(line)
                 if match:
-                    version = match.group(1)
-                    print(f"  [自动] 从日志提取 SDK 版本: {version}")
-                    return version
+                    matches.append(match.group(1))
     except (IOError, OSError) as exc:
         print(f"  [警告] 无法读取日志文件提取版本: {exc}")
-    return None
+
+    if not matches:
+        return None
+
+    version = matches[-1]
+    unique_versions = []
+    for item in matches:
+        if item not in unique_versions:
+            unique_versions.append(item)
+
+    if len(unique_versions) > 1:
+        print(
+            "  [警告] 日志中检测到多个 SDK 版本: "
+            + ", ".join(unique_versions)
+            + f"；使用最后一次出现的版本 {version}"
+        )
+    else:
+        print(f"  [自动] 从日志提取 SDK 版本: {version}")
+    return version
 
 
 def auto_detect_json_file(args) -> None:

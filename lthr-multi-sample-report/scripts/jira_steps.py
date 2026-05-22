@@ -19,14 +19,11 @@ from _report_utils import run_lark
 from base_steps import ensure_version_folder
 
 
-def step_11_jira_parse_log(args, dry_run=False):
-    """步骤11: 从日志解析 JIRA_CASE 样本。"""
-    log_step(11, "解析 JIRA_CASE 样本")
-    if not has_detected_case(args, "JIRA_CASE"):
-        print("  [跳过] 日志中未检测到 JIRA_CASE")
+def _refresh_jira_samples_from_log(args, dry_run=False):
+    """从当前日志重新解析 JIRA_CASE 样本，避免沿用陈旧缓存。"""
+    if not getattr(args, "log_file", None):
         return None
-    if not args.log_file:
-        print("  [跳过] 未指定 --log-file")
+    if not has_detected_case(args, "JIRA_CASE"):
         return None
 
     out_path = os.path.join(get_output_dir(args), f"jira_samples_{args.sdk_ver}.json")
@@ -38,6 +35,35 @@ def step_11_jira_parse_log(args, dry_run=False):
     ]
     run_cmd(cmd, dry_run=dry_run)
     return out_path
+
+
+def _resolve_jira_json_source(args, dry_run=False):
+    """优先使用显式 jira_json；否则在有日志时重刷一份最新 JIRA 样本。"""
+    if getattr(args, "jira_json", None):
+        return args.jira_json
+
+    refreshed = _refresh_jira_samples_from_log(args, dry_run=dry_run)
+    if refreshed:
+        return refreshed
+
+    for base_dir in get_search_dirs(args):
+        candidate = os.path.join(base_dir, f"jira_samples_{args.sdk_ver}.json")
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def step_11_jira_parse_log(args, dry_run=False):
+    """步骤11: 从日志解析 JIRA_CASE 样本。"""
+    log_step(11, "解析 JIRA_CASE 样本")
+    if not has_detected_case(args, "JIRA_CASE"):
+        print("  [跳过] 日志中未检测到 JIRA_CASE")
+        return None
+    if not args.log_file:
+        print("  [跳过] 未指定 --log-file")
+        return None
+
+    return _refresh_jira_samples_from_log(args, dry_run=dry_run)
 
 
 def step_12_jira_fetch_baseline(args, dry_run=False):
@@ -71,13 +97,7 @@ def step_13_jira_report(args, dry_run=False):
     """步骤13: 生成 JIRA CASE 对比报告。"""
     log_step(13, "生成 JIRA CASE 对比报告")
 
-    jira_json = args.jira_json
-    if not jira_json:
-        for base_dir in get_search_dirs(args):
-            candidate = os.path.join(base_dir, f"jira_samples_{args.sdk_ver}.json")
-            if os.path.exists(candidate):
-                jira_json = candidate
-                break
+    jira_json = _resolve_jira_json_source(args, dry_run=dry_run)
 
     baseline_json = args.jira_baseline
     if not baseline_json:

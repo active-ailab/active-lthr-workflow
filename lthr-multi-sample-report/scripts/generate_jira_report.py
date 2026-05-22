@@ -31,10 +31,26 @@ import os
 import re
 import sys
 from collections import defaultdict
-from typing import Optional
+from typing import List, Optional, Tuple
 
 
 # ─── 工具函数 ──────────────────────────────────────────────
+
+def speed_kph_to_pace_seconds(lt_speed: float) -> Optional[float]:
+    """将速度值 km/h 换算为配速秒数 s/km。"""
+    if lt_speed <= 0:
+        return None
+    return 3600.0 / lt_speed
+
+
+def pace_seconds_to_str(pace_seconds: Optional[float]) -> str:
+    """将配速秒数格式化为 m'ss\"/km。"""
+    if pace_seconds is None:
+        return "N/A"
+    total_seconds = int(round(pace_seconds))
+    minutes, seconds = divmod(total_seconds, 60)
+    return f"{minutes}'{seconds:02d}\"/km"
+
 
 def load_json(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
@@ -43,12 +59,7 @@ def load_json(path: str) -> dict:
 
 def pace_to_str(lt_speed: float) -> str:
     """将 ltSpeed (km/h) 转为配速字符串 (min/km)。"""
-    if lt_speed <= 0:
-        return "N/A"
-    pace_min_per_km = 60.0 / lt_speed
-    m = int(pace_min_per_km)
-    s = int(round((pace_min_per_km - m) * 60))
-    return f"{m}'{s:02d}\"/km"
+    return pace_seconds_to_str(speed_kph_to_pace_seconds(lt_speed))
 
 
 def fmt_change(new_val, old_val, fmt="{:.1f}", higher_better=False):
@@ -117,7 +128,17 @@ def extract_round_values(sample_data: dict, round_num: int) -> dict:
         "ltp": sample_data.get(f"{p}_LTP"),
         "lthr": sample_data.get(f"{p}_LTHR"),
         "maxhr": sample_data.get(f"{p}_MAXHR"),
+        "status": sample_data.get(f"{p}_状态"),
     }
+
+
+def collect_invalid_round_statuses(sample_data: dict) -> List[Tuple[int, str]]:
+    statuses = []
+    for r in range(1, 4):
+        status = sample_data.get(f"仿真{r}_状态")
+        if status:
+            statuses.append((r, status))
+    return statuses
 
 
 def generate_report(
@@ -242,8 +263,9 @@ def generate_report(
                     if bl:
                         lthr_vs = fmt_lthr_change(r_lthr, bl["lh"]) if r_lthr is not None else "—"
                         ltp_s_vs = "—"
-                        if r_ltp_s is not None and bl["ltSpeed"] > 0:
-                            ltp_s_vs = fmt_ltp_change(r_ltp_s, bl["ltSpeed"] * 60)
+                        old_ltp_s = speed_kph_to_pace_seconds(bl["ltSpeed"])
+                        if r_ltp_s is not None and old_ltp_s is not None:
+                            ltp_s_vs = fmt_ltp_change(float(r_ltp_s), old_ltp_s)
                     else:
                         lthr_vs = "—"
                         ltp_s_vs = "—"
@@ -271,6 +293,15 @@ def generate_report(
                         stability = "❌ 波动较大"
                     lines.append(f"- **稳定性**: {stability} (范围 {lthr_range:.0f} bpm, 平均 {lthr_avg:.0f} bpm)")
                     lines.append("")
+            else:
+                invalid_statuses = collect_invalid_round_statuses(sdata)
+                lines.append("#### SDK 仿真结果状态")
+                lines.append("")
+                lines.append("- **说明**: 当前样本未产出有效仿真结果，因此无法生成仿真对比表。")
+                if invalid_statuses:
+                    for round_num, status in invalid_statuses:
+                        lines.append(f"- 第{round_num}轮: {status}")
+                lines.append("")
 
             # 单轮次仿真总结 (如果只有 1 轮)
             if len(rounds_present) == 1:

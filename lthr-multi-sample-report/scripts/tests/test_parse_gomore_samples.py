@@ -43,8 +43,38 @@ class ParseGomoreSamplesTests(unittest.TestCase):
         self.assertEqual(record["仿真3_LTHR"], 172)
         self.assertEqual(record["性别"], "男")
         self.assertNotIn("仿真4319_LTHR", record)
-        self.assertEqual(record["仿真2_LTP"], "10'08")
+        self.assertEqual(record["仿真1_LTP"], "5'55")
+        self.assertEqual(record["仿真1_LTP（S）"], 355)
+        self.assertEqual(record["仿真2_LTP"], "5'55")
+        self.assertEqual(record["仿真2_LTP（S）"], 355)
+        self.assertEqual(record["仿真3_LTP"], "5'56")
+        self.assertEqual(record["仿真3_LTP（S）"], 356)
         self.assertEqual(record["仿真3_MAXHR"], 190)
+
+    def test_parse_log_keeps_invalid_round_status_for_failed_output(self) -> None:
+        log_text = textwrap.dedent(
+            """
+            I>0.100 GOMORE_C utest ========== SAMPLE[1/1] CASE=JIRA_CASE SAMPLE_DIR=WIN-2552 FILE=gomore_data.csv ==========
+            I>0.101 GOMORE_C utest   Round 1/3 start
+            I>0.102 ALG_GM utest Gomore output ltSpeed=-1.000000 lh=0 mh=0 guideResult=0
+            I>0.103 GOMORE_C utest   Round 2/3 start
+            I>0.104 ALG_GM utest Gomore output ltSpeed=-1.000000 lh=0 mh=0 guideResult=0
+            I>0.105 GOMORE_C utest   Round 3/3 start
+            I>0.106 ALG_GM utest Gomore output ltSpeed=-1.000000 lh=0 mh=0 guideResult=0
+            """
+        ).strip()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log_path = Path(tmp) / "invalid.log"
+            log_path.write_text(log_text, encoding="utf-8")
+
+            samples = parse_gomore_samples.parse_log(str(log_path), case_filter="JIRA_CASE")
+
+        record = samples["WIN-2552/gomore_data"]
+        self.assertIsNone(record["仿真1_LTHR"])
+        self.assertIsNone(record["仿真1_LTP"])
+        self.assertEqual(record["仿真1_状态"], "invalid_result: ltSpeed=-1.000, lh=0, mh=0")
+        self.assertEqual(record["仿真3_状态"], "invalid_result: ltSpeed=-1.000, lh=0, mh=0")
 
 
 if __name__ == "__main__":

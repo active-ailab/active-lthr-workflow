@@ -4,6 +4,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import shutil
 import sys
 import time
@@ -22,6 +23,53 @@ from _report_utils import _parse_markdown_table_records, run_lark, _payload_to_r
 
 
 # ── 共享辅助函数 ──
+
+BASE_URL_LINE_RE = re.compile(r"(> 完整数据见飞书 Base:\s*)(https://zepp\.feishu\.cn/base/[A-Za-z0-9]+)")
+
+
+def _build_base_url(base_token: str) -> str:
+    if not base_token:
+        return ""
+    return f"https://zepp.feishu.cn/base/{base_token}"
+
+
+def _effective_base_url(args) -> str:
+    copied_token = getattr(args, "_copied_base_token", "")
+    if copied_token:
+        return _build_base_url(copied_token)
+    return getattr(args, "base_url", "") or _build_base_url(
+        getattr(args, "base_template", "") or getattr(args, "base_token", "")
+    )
+
+
+def _remember_base_url(args, base_token: str) -> str:
+    base_url = _build_base_url(base_token)
+    if base_url:
+        args.base_url = base_url
+    return base_url
+
+
+def _rewrite_report_base_url(report_path: str, base_url: str) -> bool:
+    if not base_url or not os.path.exists(report_path):
+        return False
+
+    with open(report_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    updated, count = BASE_URL_LINE_RE.subn(lambda match: f"{match.group(1)}{base_url}", content, count=1)
+    if count == 0 and "## 5. 数据表（Base 快照）" in content and base_url not in content:
+        updated = content.replace(
+            "## 5. 数据表（Base 快照）\n",
+            f"## 5. 数据表（Base 快照）\n\n> 完整数据见飞书 Base: {base_url}\n",
+            1,
+        )
+
+    if updated == content:
+        return False
+
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(updated)
+    return True
 
 def _list_drive_folder(parent_token, dry_run=False):
     """列出云盘文件夹内容，返回文件列表。使用原生 API 格式。"""
@@ -176,11 +224,47 @@ def _resolve_report_source(args, dry_run=False):
 
     fname = os.path.basename(source)
     if fname.startswith("samples_"):
+        candidate = None
         for base_dir in get_search_dirs(args):
             candidate = os.path.join(base_dir, f"base_data_{args.sdk_ver}.json")
             if os.path.exists(candidate):
-                print(f"  [信息] 使用 Base 数据源 {os.path.basename(candidate)}")
-                return candidate
+                if dry_run:
+                    print(f"  [信息] 使用 Base 数据源 {os.path.basename(candidate)}")
+                    return candidate
+
+                base_records = load_json(candidate)
+                sample_records = load_json(source)
+                if isinstance(base_records, dict) and isinstance(sample_records, dict):
+                    merged_records = _merge_template_records(base_records, sample_records)
+                    if merged_records != base_records:
+                        with open(candidate, "w", encoding="utf-8") as f:
+                            json.dump(merged_records, f, ensure_ascii=False, indent=2)
+                        print(f"  [信息] 已用最新 samples 刷新 Base 数据源 {os.path.basename(candidate)}")
+                    else:
+                        print(f"  [信息] 使用 Base 数据源 {os.path.basename(candidate)}")
+                    return candidate
+
+        auto_pulled = _pull_base_snapshot(args, dry_run=dry_run)
+        if auto_pulled and (dry_run or os.path.exists(auto_pulled)):
+            if dry_run:
+                print(f"  [信息] 未发现本地 base_data，已自动补拉 {os.path.basename(auto_pulled)}")
+                return auto_pulled
+
+            base_records = load_json(auto_pulled)
+            sample_records = load_json(source)
+            if isinstance(base_records, dict) and isinstance(sample_records, dict):
+                merged_records = _merge_template_records(base_records, sample_records)
+                if merged_records != base_records:
+                    with open(auto_pulled, "w", encoding="utf-8") as f:
+                        json.dump(merged_records, f, ensure_ascii=False, indent=2)
+                print(f"  [信息] 未发现本地 base_data，已自动补拉并合并 {os.path.basename(auto_pulled)}")
+            return auto_pulled
+
+        if candidate:
+            print(
+                f"  [警告] 未发现本地 {os.path.basename(candidate)}，且自动拉取 Base 基线失败；"
+                "当前回退为仅仿真 samples 数据源"
+            )
     return source
 
 
@@ -263,6 +347,16 @@ def _merge_template_records(template_records: dict, new_records: dict) -> dict:
     return merged
 
 
+def _filter_record_fields(record: dict, allowed_fields: set[str]) -> tuple[dict, set[str]]:
+    """过滤掉目标 Base 中不存在的字段，避免整条 upsert 被拒绝。"""
+    if not allowed_fields:
+        return dict(record), set()
+
+    filtered = {key: value for key, value in record.items() if key in allowed_fields}
+    skipped = {key for key in record.keys() if key not in filtered}
+    return filtered, skipped
+
+
 def _fetch_all_records_by_token(base_token, table_id, dry_run=False):
     """获取指定 Base 表的所有记录，保留返回顺序。"""
     result = _run_record_list_with_retry([
@@ -274,6 +368,20 @@ def _fetch_all_records_by_token(base_token, table_id, dry_run=False):
     if not result.get("ok"):
         return {}
     return _extract_record_map(result)
+
+
+def _fetch_field_names_by_token(base_token, table_id, dry_run=False):
+    """获取指定 Base 表的字段名集合。"""
+    result = run_lark([
+        "base", "+field-list",
+        "--base-token", base_token,
+        "--table-id", table_id,
+    ], dry_run=dry_run, allow_raw=True)
+    if not result.get("ok"):
+        return set()
+
+    fields = (result.get("data") or {}).get("fields") or []
+    return {field.get("name", "") for field in fields if field.get("name")}
 
 
 def _run_record_list_with_retry(cmd_args, dry_run=False, max_retries=12):
@@ -322,7 +430,10 @@ def _copy_template_and_get_token(args, dry_run=False):
         new_token = data.get("base_token", "") or data.get("base", {}).get("base_token", "")
         if new_token:
             args._copied_base_token = new_token
+            base_url = _remember_base_url(args, new_token)
             print(f"  [完成] 已复制模板 → 新 Base token: {new_token}")
+            if base_url:
+                print(f"  [信息] 本次报告 Base 链接: {base_url}")
             # 先等待 Base 复制完成
             _wait_for_base_ready(new_token, dry_run=dry_run)
             # 再查询新 Base 的 table ID（复制后可能变化）
@@ -335,6 +446,7 @@ def _copy_template_and_get_token(args, dry_run=False):
         print(f"  [警告] 模板复制失败，回退到使用原模板")
         new_token = args.base_template
         args._copied_base_token = new_token
+    _remember_base_url(args, new_token)
     return new_token
 
 
@@ -427,6 +539,11 @@ def step_2_write_base(args, dry_run=False):
         return
 
     merged_data = _merge_template_records(template_records, data)
+    allowed_fields = set()
+    if not dry_run:
+        allowed_fields = _fetch_field_names_by_token(target_token, target_table, dry_run=dry_run)
+        if allowed_fields:
+            print(f"  [信息] 目标 Base 字段数: {len(allowed_fields)}")
 
     if not dry_run:
         existing = _fetch_all_record_ids_by_token(target_token, target_table)
@@ -435,8 +552,12 @@ def step_2_write_base(args, dry_run=False):
             print(f"  [完成] 已清空新 Base 旧记录: {len(existing)} 条")
 
     written = 0
+    skipped_fields = set()
     for sample_name, fields in merged_data.items():
         record = dict(fields)
+        if allowed_fields:
+            record, skipped = _filter_record_fields(record, allowed_fields)
+            skipped_fields.update(skipped)
         record["样本"] = record.get("样本") or sample_name
         rec_json = json.dumps(record, ensure_ascii=False)
         run_lark([
@@ -447,6 +568,8 @@ def step_2_write_base(args, dry_run=False):
         ], dry_run=dry_run, allow_raw=True)
         written += 1
 
+    if skipped_fields:
+        print("  [信息] 已忽略目标 Base 中不存在的字段: " + ", ".join(sorted(skipped_fields)))
     print(f"  [完成] 已合并写入 {written} 条记录到新 Base（保留模板基准字段与顺序）")
 
 
@@ -463,13 +586,11 @@ def _fetch_all_record_ids_by_token(base_token, table_id):
     return _extract_record_ids(result)
 
 
-def step_3_pull_base(args, dry_run=False):
-    """步骤3: 从副本拉取 Base 数据。"""
-    log_step(3, "拉取 Base 数据")
+def _pull_base_snapshot(args, dry_run=False):
+    """拉取当前 SDK 对应的 Base 快照到输出目录。"""
     target_token = _target_base_token(args)
     target_table = getattr(args, "_copied_base_table_id", None) or args.table_id
     if not target_token or not target_table:
-        print("  [跳过] 未指定 base-token / table-id")
         return None
 
     out_path = os.path.join(get_output_dir(args), f"base_data_{args.sdk_ver}.json")
@@ -485,10 +606,33 @@ def step_3_pull_base(args, dry_run=False):
         if records:
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump(records, f, ensure_ascii=False, indent=2)
-            print(f"  [完成] 已保存 {len(records)} 条记录至 {out_path}")
+            return out_path
+        print(f"  [注意] 已请求 Base 数据，但未从返回中提取到记录: {out_path}")
+        return None
+
+    if dry_run and result.get("ok"):
+        return out_path
+    return None
+
+
+def step_3_pull_base(args, dry_run=False):
+    """步骤3: 从副本拉取 Base 数据。"""
+    log_step(3, "拉取 Base 数据")
+    if not _target_base_token(args) or not (getattr(args, "_copied_base_table_id", None) or args.table_id):
+        print("  [跳过] 未指定 base-token / table-id")
+        return None
+
+    out_path = _pull_base_snapshot(args, dry_run=dry_run)
+    if out_path:
+        if dry_run:
+            print(f"  [完成] 已预演拉取 Base 数据至 {out_path}")
         else:
-            print(f"  [注意] 未从返回数据中提取到记录，保存原始结果为 {out_path}")
-    return out_path
+            records = load_json(out_path)
+            print(f"  [完成] 已保存 {len(records)} 条记录至 {out_path}")
+        return out_path
+
+    print("  [注意] 未从 Base 返回中提取到有效记录")
+    return None
 
 
 def step_4_garmin_report(args, dry_run=False):
@@ -506,8 +650,9 @@ def step_4_garmin_report(args, dry_run=False):
         "--sdk-version", args.sdk_ver,
         "-o", out_path,
     ]
-    if args.base_url:
-        cmd += ["--base-url", args.base_url]
+    base_url = _effective_base_url(args)
+    if base_url:
+        cmd += ["--base-url", base_url]
     run_cmd(cmd, dry_run=dry_run)
 
 
@@ -585,6 +730,10 @@ def step_7_publish_doc(args, dry_run=False):
     if dry_run:
         print(f"  [干跑] lark-cli docs +create --title ... --markdown ... --folder-token <ver>")
         return "https://dryrun.feishu.cn/doc/xxx"
+
+    base_url = _effective_base_url(args)
+    if _rewrite_report_base_url(report_path, base_url):
+        print(f"  [信息] 已修正报告中的 Base 链接: {base_url}")
 
     # 先确保版本子文件夹存在
     ver_token = ensure_version_folder(args, dry_run=False)

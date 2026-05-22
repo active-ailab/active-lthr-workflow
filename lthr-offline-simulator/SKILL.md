@@ -1,6 +1,6 @@
 ---
 name: lthr-offline-simulator
-description: 在真机上对GoMore离线CSV进行仿真并取日志。设备操作由 watchlink-v3 提供。触发词: gomore offline csv test, WL+DISK=FS, data_sample, 单样本仿真, 批量仿真, 多样本, utest, Jira回传。
+description: 在真机上对GoMore离线CSV进行仿真并取日志，也适用于乳酸阈引导测试目标心率区间/百分比计算。设备操作由 watchlink-v3 提供。触发词: gomore offline csv test, WL+DISK=FS, data_sample, 单样本仿真, 批量仿真, 多样本, utest, Jira回传, 乳酸阈引导测试, 引导测试百分比, 目标心率区间, maxHr, restHr。
 ---
 
 # LTHR Offline Simulator
@@ -10,11 +10,13 @@ description: 在真机上对GoMore离线CSV进行仿真并取日志。设备操�
 ## 使用边界
 
 - 适用场景：GoMore offline CSV 真机仿真、Jira CSV 附件回放、`data_sample` 多样本批跑、IMG 日志提取。
+- 适用场景：根据 `maxHr` / `restHr` 计算乳酸阈引导测试各阶段目标心率区间。
 - 不适用场景：纯 watchlink 串口发命令、刷机、monkey、端口选择问题；这类直接走 watchlink-v3 skill。
 - 如需设备操作帮助，请优先查看 `agent_skills/skills/device/watchlink-v3/SKILL.md` 的触发词列表。
 - WSL 主流程默认省略 `--disk-root`，让脚本走 Windows data-root 稳定路径。
 - 多设备或端口歧义时显式传 `--mgr-port` 和 `--uart-port`。
 - 共享 helper 已内建 bridge 异常、COM 口占用、post-unmount reset、shell-ready 提示；skill 文档不再重复长篇排障清单。
+- 引导测试心率区间的阶段百分比、公式和示例见 `references/guide_test_hr_ranges.md`。
 
 | 工作流 | 脚本 | 数据源 | 产出 |
 |--------|------|--------|------|

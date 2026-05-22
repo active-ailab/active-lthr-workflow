@@ -12,6 +12,7 @@ LTHR 离线仿真工作流，运行在真机设备上。
 - 只跑 UART `utest`
 - IMG 日志提取
 - 结果写出为 Markdown / JSON / Jira 评论
+- 乳酸阈引导测试目标心率区间 / 百分比计算
 
 ## 边界说明
 
@@ -146,6 +147,10 @@ python3 -m unittest discover -s . -v
 ## 说明
 
 - `assets/` 放模板
-- `references/` 放输出结构、错误码和维护说明
+- `references/` 放输出结构、错误码、引导测试心率区间等专项说明
 - `README.md` 面向 GitHub / 团队成员
 - `SKILL.md` 面向 agent 路由与执行提示
+
+## 专项参考
+
+- 引导测试目标心率区间计算：`references/guide_test_hr_ranges.md`

@@ -45,9 +45,44 @@ RESULT_RE = re.compile(
     r"Gomore output ltSpeed=(?P<ltSpeed>[-+]?\d+(?:\.\d+)?) "
     r"lh=(?P<lh>-?\d+) mh=(?P<mh>-?\d+) guideResult=(?P<guideResult>-?\d+)"
 )
+ROUND_RE = re.compile(r"Round\s*(\d+)\s*/\s*(\d+)")
+SAMPLE_PROGRESS_RE = re.compile(r"SAMPLE\s*\[\s*(\d+)\s*/\s*(\d+)\s*\]")
 SAMPLE_RESULT_RE = re.compile(r"Sample\[(\d+)/(\d+)\]\s+(PASS|FAIL)")
 SUMMARY_RE = re.compile(r"All sample cases completed:\s*total=(\d+),\s*failed=(\d+)")
 COLLECTED_RE = re.compile(r"Collected sample summary:\s*total=(\d+)\s+root=(\d+)\s+base=(\d+)\s+jira=(\d+)")
+
+
+def _find_test_start_line(lines: List[str]) -> Optional[int]:
+    """Find the first line that belongs to the current multi-sample test."""
+    for idx, line in enumerate(lines):
+        if START_MARKER in line:
+            return idx
+
+    for idx, line in enumerate(lines):
+        if any((
+            SAMPLE_PROGRESS_RE.search(line),
+            ROUND_RE.search(line),
+            SAMPLE_RESULT_RE.search(line),
+            SUMMARY_RE.search(line),
+            END_MARKER in line,
+        )):
+            return idx
+    return None
+
+
+def trim_log_to_test_activity(log_path: Path) -> bool:
+    """Trim a copied IMG log to only keep lines from the current test onward."""
+    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    start_idx = _find_test_start_line(lines)
+    if start_idx is None or start_idx == 0:
+        return False
+
+    trimmed_lines = lines[start_idx:]
+    if START_MARKER not in trimmed_lines[0]:
+        trimmed_lines.insert(0, START_MARKER)
+
+    log_path.write_text("\n".join(trimmed_lines) + "\n", encoding="utf-8")
+    return True
 
 # ════════════════════════════════════════════
 # IMG 日志解析
@@ -429,6 +464,16 @@ def run_img_extract_pipeline(
             result["log_files_deleted"] = len([path for path in removed if path.name.lower().endswith(".log")])
 
     copied_strings = [str(p) for p in copied]
+
+    trimmed_count = 0
+    for copied_path in copied:
+        try:
+            if trim_log_to_test_activity(copied_path):
+                trimmed_count += 1
+        except Exception as exc:
+            print(f"  [警告] 裁剪 IMG 日志失败 {copied_path.name}: {exc}")
+    if trimmed_count:
+        print(f"  [OK] 已裁剪 {trimmed_count} 个 IMG 日志，仅保留多样本测试开始后的内容")
 
     # Phase 4: 解析
     batches: List[Dict] = []

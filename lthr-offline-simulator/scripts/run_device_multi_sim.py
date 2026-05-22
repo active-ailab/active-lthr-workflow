@@ -268,6 +268,44 @@ def main() -> None:
 
     raw_sections: List[str] = []
     summary_info: dict = init_multi_sample_summary(stamp, local_data_sample, len(csv_files))
+    phase3_log = ""
+
+    def _write_runtime_checkpoint() -> None:
+        write_artifacts(
+            log_path=log_path,
+            json_path=json_path,
+            raw_log="".join(raw_sections) + phase3_log,
+            summary=summary_info,
+        )
+
+    def _on_phase3_state(phase_state: Dict[str, object], full_log: str) -> None:
+        nonlocal phase3_log
+        phase3_log = full_log
+        set_status(summary_info, str(phase_state.get("status", "running")))
+
+        progress = phase_state.get("progress", {})
+        if isinstance(progress, dict):
+            summary_info["phase3_progress"] = dict(progress)
+
+        summary_info["total_samples"] = int(phase_state.get("total_samples", summary_info.get("total_samples", 0)) or 0)
+        summary_info["passed"] = int(phase_state.get("passed", summary_info.get("passed", 0)) or 0)
+        summary_info["failed"] = int(phase_state.get("failed", summary_info.get("failed", 0)) or 0)
+        summary_info["runtime_seconds"] = int(phase_state.get("runtime_seconds", summary_info.get("runtime_seconds", 0)) or 0)
+        summary_info["log_path"] = str(log_path)
+        summary_info["log_size_bytes"] = int(phase_state.get("log_size_bytes", len(full_log)) or 0)
+
+        update_metrics(
+            summary_info,
+            total_samples=summary_info["total_samples"],
+            passed=summary_info["passed"],
+            failed=summary_info["failed"],
+            runtime_seconds=summary_info["runtime_seconds"],
+            log_size_bytes=summary_info["log_size_bytes"],
+            current_sample=progress.get("current_sample") if isinstance(progress, dict) else None,
+            current_round=progress.get("current_round") if isinstance(progress, dict) else None,
+            total_rounds=progress.get("total_rounds") if isinstance(progress, dict) else None,
+        )
+        _write_runtime_checkpoint()
 
     def _fail_phase(status: str, error: Exception, label: str) -> None:
         set_status(summary_info, f"{status}: {error}")
@@ -343,6 +381,8 @@ def main() -> None:
         print(f"[信息] 设备已就绪")
         print("[信息] 已完成 UART 常亮与 shell 稳定探测")
         print(f"[信息] 等待 {args.pre_run_delay_sec} 秒后发送测试命令（避免日志溢出）...")
+        set_status(summary_info, "device_ready")
+        _write_runtime_checkpoint()
         time.sleep(args.pre_run_delay_sec)
     except Exception as e:
         _fail_phase("boot_phase_failed", e, "Phase 2")
@@ -366,7 +406,9 @@ def main() -> None:
             run_timeout_sec=args.run_timeout_sec,
             listen_chunk_sec=args.listen_chunk_sec,
             progress_callback=print_progress,
+            state_callback=_on_phase3_state,
         )
+        phase3_log = run_log
         raw_sections.append(run_log)
         total_runtime = time.time() - run_start
         full_log = run_log
