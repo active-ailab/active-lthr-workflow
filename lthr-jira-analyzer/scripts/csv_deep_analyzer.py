@@ -89,6 +89,11 @@ def safe_int(v, default=0):
         return default
 
 
+def speed_csv_to_kmh(v):
+    """gomore_log_to_csv.py writes the source SPEED value in km/h."""
+    return safe_float(v, -1.0)
+
+
 def kmh_to_pace_str(kmh: float) -> str:
     """km/h → "M'SS\"/km" 格式的配速字符串"""
     if kmh <= 0:
@@ -219,7 +224,7 @@ def analyze_csv(path: str, age: Optional[int] = None,
     for r in rows:
         ts = safe_int(r[COL_TIMESTAMP])
         hr = safe_int(r[COL_HR], -1)
-        spd = safe_float(r[COL_SPEED], -1.0)
+        spd = speed_csv_to_kmh(r[COL_SPEED])
         timestamps.append(ts)
 
         hr_data.append(hr)
@@ -252,7 +257,7 @@ def analyze_csv(path: str, age: Optional[int] = None,
     # 年龄
     userinfo_age = _get_userinfo_age(userinfo_raw)
     resolved_age = age or userinfo_age or 35  # fallback 35
-    hr_max_est = 220 - resolved_age
+    hr_max_est = 208 - resolved_age * 0.7
 
     # ==================== 每公里分段统计 ====================
     cum_dist = 0.0
@@ -261,7 +266,7 @@ def analyze_csv(path: str, age: Optional[int] = None,
     prev_km = 0
 
     for i, r in enumerate(rows):
-        spd = safe_float(r[COL_SPEED], -1.0)
+        spd = speed_csv_to_kmh(r[COL_SPEED])
         hr = safe_int(r[COL_HR], -1)
         if spd > 0:
             cum_dist += spd / 3600.0
@@ -308,7 +313,7 @@ def analyze_csv(path: str, age: Optional[int] = None,
         cum = 0.0
         sprint_start_idx = 0
         for i, r in enumerate(rows):
-            spd = safe_float(r[COL_SPEED], -1.0)
+            spd = speed_csv_to_kmh(r[COL_SPEED])
             if spd > 0:
                 cum += spd / 3600.0
             if cum >= total_dist - sprint_km_hint:
@@ -338,7 +343,7 @@ def analyze_csv(path: str, age: Optional[int] = None,
         bin_spds = []
         for i, r in enumerate(rows):
             h = safe_int(r[COL_HR], -1)
-            s = safe_float(r[COL_SPEED], -1.0)
+            s = speed_csv_to_kmh(r[COL_SPEED])
             if hr_min_bin <= h < hr_max_bin and s > 0:
                 bin_hrs.append(h)
                 bin_spds.append(s)
@@ -419,9 +424,9 @@ def analyze_csv(path: str, age: Optional[int] = None,
     lines.append(f"| 有效HR样本 | {valid_hr_count} |")
     lines.append(f"| HR 范围 | {hr_min} ~ {hr_max} bpm |")
     lines.append(f"| HR 平均值 | {hr_avg:.0f} bpm |")
-    lines.append(f"| 速度单位 | **km/h** (非 m/s) |")
+    lines.append(f"| 速度单位 | **km/h（gomore_log_to_csv.py 导出值）** |")
     lines.append("")
-    lines.append(f"> **重要**：确认 CSV 中 `SPEED` 列单位为 km/h。例如首段巡航配速约 {spd_avg:.1f} km/h = {kmh_to_pace_str(spd_avg)}。")
+    lines.append(f"> **重要**：本报告针对 `gomore_log_to_csv.py` 生成的 CSV，`SPEED` 按 km/h 读取。例如首段巡航速度约 {spd_avg:.1f} km/h = {kmh_to_pace_str(spd_avg)}。")
     lines.append("")
 
     # 运动节奏分析
@@ -496,7 +501,7 @@ def analyze_csv(path: str, age: Optional[int] = None,
     if lt_mh:
         lines.append(f"| 算法最大心率(mh) | **{lt_mh} bpm** | {(lt_mh/hr_max_est*100):.1f}% | - |")
     lines.append("")
-    lines.append(f"> 估算 HRmax (220-age 公式): 220 - {resolved_age} = **{hr_max_est:.0f} bpm**")
+    lines.append(f"> 默认 HRmax (208-age×0.7 公式): 208 - {resolved_age}×0.7 = **{hr_max_est:.1f} bpm**")
     lines.append("")
 
     lines.append("### 实际运动数据 vs 设备阈值")

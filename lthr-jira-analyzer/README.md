@@ -100,6 +100,34 @@ python .\scripts\run_lt_log_analysis.py --issue-file .\scripts\issues.txt
 9. 写 Jira 评论摘要
 10. 批量模式输出汇总 Markdown 报告
 
+## 基础出值分析
+
+Jira 评论除了回传 CSV 和算法结果，还会按 GoMore 的基本出值条件做初步分析：
+
+```text
+HR > 70%HRR
+SPEED > 6 kph
+同时满足时间 > 720 s
+```
+
+其中：
+
+```text
+70%HRR = (MaxHR - RestHR) × 70% + RestHR
+```
+
+`MaxHR` 优先读取日志中 `EHisPd[maxHr]` 排列的最后一个有效值；没有有效历史值时，按 `208 - age × 0.7` 计算。`SPT_S_SY` 或界面侧 `maxhr` 不参与此取值。`gomore_log_to_csv.py` 生成的 CSV 中 SPEED 按 km/h 处理，可直接与 6 kph 比较；直接读取 FIT 时需先确认单位。
+
+分析结果会分别记录：
+
+- HR 有效点、HR 达标点
+- 速度有效点、速度达标点
+- HR 与速度同时达标点
+- SDK 日志中的 `valueCount`
+- `ltPace`、`ltHr`、`ltSpeed`、`lh`、`mh`、`guideResult`
+
+原始 CSV/FIT 的逐点统计不等于 SDK 内部 `valueCount`。即使 HR 和速度同时达标超过 720 秒，也只能说明满足基础条件，仍需结合 SDK 内部有效性、历史状态和最终输出判断是否应出值。
+
 ## 子脚本示例
 
 ### 日志转 CSV

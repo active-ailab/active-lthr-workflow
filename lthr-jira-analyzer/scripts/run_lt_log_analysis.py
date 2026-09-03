@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import csv
 import json
 import os
 import re
@@ -222,11 +223,9 @@ def build_comment(issue_meta, source_txt, parse_json, signature, root_work_dir=N
     lines = ["【乳酸阈值日志分析结果】"]
     if signature:
         lines.append(signature)
-    lines.append(f"* Issue: [{issue_key}|{issue_link}]" if issue_link else f"* Issue: {issue_key}")
-    if issue_meta.get("title"):
-        lines.append(f"* 标题: {issue_meta['title']}")
-    lines.append(f"* Source Log: {source_txt.name}")
-    lines.append(f"* Sample CSV Count: {len(results)}")
+    issue_text = f"[{issue_key}|{issue_link}]" if issue_link else issue_key
+    title_text = f" | 标题: {issue_meta['title']}" if issue_meta.get("title") else ""
+    lines.append(f"* Issue: {issue_text}{title_text} | Source Log: {source_txt.name} | Sample CSV Count: {len(results)}")
 
     if not results:
         lines.append("* 结论: 未解析到可导出的样本数据")
@@ -248,18 +247,132 @@ def build_comment(issue_meta, source_txt, parse_json, signature, root_work_dir=N
         rows = r.get("rows", "-")
         user_info = r.get("userInfo", "-")
         csv_name = Path(r.get("csv", "")).name
-        lines.append(f"* Result #{i}: {csv_name} | rows={rows} | ltSpeed={lt_speed} ({pace}) | lh={lh} | mh={mh}")
-        lines.append(f"  userInfo={user_info}")
+        guide_result = alg.get("guideResult") if alg.get("guideResult") is not None else "-"
+        lines.append(f"  - Result #{i}: {csv_name}, rows={rows}, ltSpeed={lt_speed} ({pace}), lh={lh}, mh={mh}, guideResult={guide_result}, userInfo={user_info}")
 
     # Append anomaly analysis (Feature 1)
     if root_work_dir:
         anomaly_lines = build_anomaly_analysis(results, root_work_dir)
         if anomaly_lines:
-            lines.append("* 数值分析:")
-            lines.extend(anomaly_lines)
+            lines.append("* 辅助检查: " + "；".join(line.strip().lstrip("*").strip() for line in anomaly_lines))
+
+    gate_lines = build_gate_analysis(source_txt, results)
+    if gate_lines:
+        lines.extend(gate_lines)
 
     lines.append("* 说明: 样本 CSV 已作为附件上传，可直接用于复现与对比")
     return "\n".join(lines)
+
+
+def extract_lthr_log_metadata(log_path):
+    """Extract gate-related fields while preserving maxHr array order."""
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return {}
+
+    def numbers(value):
+        return [float(x) for x in re.findall(r"-?(?:\d+\.\d+|\d+)", value)]
+
+    max_hr_history = []
+    value_counts = []
+    lt_pace = []
+    lt_hr = []
+    process_status = []
+    for line in text.splitlines():
+        lower = line.lower()
+        # The last positive value in the EHisPd[maxHr] array is the value used
+        # for this analysis. Do not use SPT_S_SY/UI maxhr fields here.
+        if re.search(r"ehispd.*maxhr", lower):
+            max_hr_history.extend(numbers(line.split("=", 1)[-1]))
+        if "valuecount" in lower:
+            value_counts.extend(numbers(line.split("=", 1)[-1]))
+        if "ltpace" in lower:
+            lt_pace.extend(numbers(line.split("=", 1)[-1]))
+        if "lthr" in lower:
+            lt_hr.extend(numbers(line.split("=", 1)[-1]))
+        if "process completed" in lower:
+            process_status.append(line.strip())
+
+    return {
+        "max_hr_history": max_hr_history,
+        "value_count": value_counts[-1] if value_counts else None,
+        "lt_pace": lt_pace[-1] if lt_pace else None,
+        "lt_hr": lt_hr[-1] if lt_hr else None,
+        "process_status": process_status[-1] if process_status else None,
+    }
+
+
+def compute_gate_stats(csv_path, hr_gate):
+    """Count raw points using the km/h SPEED written by gomore_log_to_csv.py."""
+    stats = {"hr_valid": 0, "hr_pass": 0, "speed_valid": 0, "speed_pass": 0, "both_pass": 0}
+    try:
+        with open(csv_path, "r", encoding="utf-8", errors="replace", newline="") as f:
+            for row in csv.DictReader(f):
+                try:
+                    hr = float(row.get("HR", "-1"))
+                except (TypeError, ValueError):
+                    hr = -1
+                try:
+                    speed_kmh = float(row.get("SPEED", "-1"))
+                except (TypeError, ValueError):
+                    speed_kmh = -1
+                hr_ok = hr > 0
+                speed_ok = speed_kmh >= 0
+                hr_pass = hr_ok and hr > hr_gate
+                speed_pass = speed_ok and speed_kmh > 6
+                stats["hr_valid"] += int(hr_ok)
+                stats["hr_pass"] += int(hr_pass)
+                stats["speed_valid"] += int(speed_ok)
+                stats["speed_pass"] += int(speed_pass)
+                stats["both_pass"] += int(hr_pass and speed_pass)
+    except Exception:
+        return None
+    return stats
+
+
+def build_gate_analysis(source_txt, results):
+    """Build a source-based LTHR eligibility analysis for the Jira comment."""
+    if not results:
+        return []
+    metadata = extract_lthr_log_metadata(source_txt)
+    user_info = results[0].get("userInfo")
+    if not isinstance(user_info, list) or len(user_info) < 6:
+        return ["  * 出值条件分析: userInfo 不完整，无法计算 70%HRR 门槛"]
+    try:
+        age = float(user_info[0])
+        rest_hr = float(user_info[5])
+    except (TypeError, ValueError):
+        return ["  * 出值条件分析: age/hrRest 无法解析，无法计算 70%HRR 门槛"]
+
+    history = [v for v in metadata.get("max_hr_history", []) if v > 0]
+    max_hr = history[-1] if history else (208 - age * 0.7)
+    max_hr_source = "EHisPd[maxHr]排列中最后一个有效值" if history else "默认公式 208-age×0.7"
+    hr_gate = (max_hr - rest_hr) * 0.7 + rest_hr
+    parts = [
+        f"userInfo(age={age:g}, restHR={rest_hr:g})",
+        f"MaxHR={max_hr:.1f}（{max_hr_source}）",
+        f"门槛=HR>{hr_gate:.1f}bpm 且 SPEED>6kph，时间>720s",
+    ]
+    if metadata.get("value_count") is not None:
+        parts.append(f"SDK valueCount={metadata['value_count']:g}")
+    if metadata.get("lt_pace") is not None or metadata.get("lt_hr") is not None:
+        parts.append(f"日志结束字段 ltPace={metadata.get('lt_pace', '-')}, ltHr={metadata.get('lt_hr', '-')}")
+    if metadata.get("process_status"):
+        parts.append(f"处理状态={metadata['process_status']}")
+
+    for i, result in enumerate(results, 1):
+        stats = compute_gate_stats(result.get("csv"), hr_gate)
+        if stats is None:
+            continue
+        status = "达到 720 秒条件" if stats["both_pass"] > 720 else "未达到 720 秒条件"
+        parts.append(
+            f"Result #{i} HR有效/达标={stats['hr_valid']}/{stats['hr_pass']}, "
+            f"速度有效/达标={stats['speed_valid']}/{stats['speed_pass']}, "
+            f"同时达标={stats['both_pass']}，{status}"
+        )
+    parts.append("结论边界=满足基础门槛不等于一定出值，需结合 SDK 有效性、历史状态和最终输出")
+    return ["* 出值条件分析: " + "；".join(parts)]
 
 
 def upload_csvs(zepp_cmd, issue_key, csv_paths):
@@ -315,7 +428,7 @@ def build_anomaly_analysis(results, root_work_dir):
       - lthr < maxHR * 0.9   => lactate threshold too LOW relative to max HR
       - lthr >= maxHR         => lactate threshold too HIGH (>= max HR)
       - mh < maxHR            => aerobic threshold upper bound (mh) below max HR
-      - ltSpeed < avgSpeed    => lactate threshold pace slower than average pace
+      - ltSpeed < avgSpeed_kmh => lactate threshold speed slower than average speed
     
     Returns list of markdown lines (may be empty if no anomalies).
     """
@@ -367,18 +480,17 @@ def build_anomaly_analysis(results, root_work_dir):
         # 3. ltSpeed < avgSpeed
         if lt_speed is not None and avg_speed is not None:
             lt_val = float(lt_speed)
-            if lt_val < avg_speed:
+            avg_speed_kmh = avg_speed
+            if lt_val < avg_speed_kmh:
                 findings.append(
-                    f"乳酸阈配速({lt_val:.2f}m/s) < 平均速度({avg_speed:.2f}m/s)，"
+                    f"乳酸阈速度({lt_val:.2f}km/h) < 平均速度({avg_speed_kmh:.2f}km/h)，"
                     f"阈配速慢于平均速度"
                 )
 
         if findings:
             csv_name = Path(csv_path).name
-            lines.append(f"  * Result #{i} ({csv_name}) 数值分析:")
-            lines.append(f"    - maxHR={max_hr:.0f}, avgSpeed={avg_speed:.2f}m/s" if avg_speed is not None else f"    - maxHR={max_hr:.0f}")
-            for f_text in findings:
-                lines.append(f"    - ⚠️ {f_text}")
+            stats_text = f"maxHR={max_hr:.0f}, avgSpeed={avg_speed:.2f}km/h" if avg_speed is not None else f"maxHR={max_hr:.0f}"
+            lines.append(f"Result #{i} ({csv_name}): {stats_text}，" + "；".join(f"⚠️ {f_text}" for f_text in findings))
 
     return lines
 

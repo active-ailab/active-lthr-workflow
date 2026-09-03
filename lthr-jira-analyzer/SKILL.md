@@ -97,6 +97,21 @@ GoMore 乳酸阈（LTHR）算法**仅在以下运动类型下生效**：
 9. 写入 Jira 评论摘要（可通过 `--no-comment` 关闭）。
 10. 批量模式下生成汇总报告，包含每个 Jira 的单问题描述总结。
 
+### 出值条件分析（基础分析）
+
+主流程在 Jira 评论中同时输出 GoMore 出值条件检查，不把“满足运动条件”和“最终出值”混为一谈：
+
+- 出值基础条件：`HR > 70%HRR`、`SPEED > 6 kph`，且同时满足时间超过 `720 s`。
+- `70%HRR = (MaxHR - RestHR) × 70% + RestHR`。
+- `MaxHR` 优先取日志中 `EHisPd[maxHr]` 排列的最后一个有效值；没有有效历史值时使用 `208 - age × 0.7`。`SPT_S_SY` 或界面侧 `maxhr` 不参与此取值。
+- `gomore_log_to_csv.py` 生成的样本 CSV 中 `SPEED` 按日志原值处理；当前工具链中该值为 km/h，可直接与 6 kph 比较。直接读取原始 FIT 时，需先确认其字段单位，不能混用两种口径。
+- 原始 CSV/FIT 的逐点统计和 SDK 日志中的 `valueCount` 分开记录，不能相互替代。
+- 同时核对 `ltPace`、`ltHr`、`Gomore output`、`guideResult` 以及处理状态。
+
+分析顺序：确认样本对应关系 → 读取 age/restHR → 确认历史 MaxHR → 计算 HR 门槛 → 统计 HR/速度/同时达标点 → 核对 `valueCount` 和最终输出 → 再判断未出值原因。
+
+结论边界：同时满足 HR 和速度条件不等于一定出值，还需结合 SDK 内部有效性、历史乳酸阈状态和实际处理结果。`SPT_S_SY` 中的运动心率区间 `maxhr` 不能替代 `EHisPd[maxHr]`。
+
 ## 输出
 
 ### Jira 附件
@@ -106,7 +121,7 @@ GoMore 乳酸阈（LTHR）算法**仅在以下运动类型下生效**：
 结构化摘要（Issue/标题/样本数量/每个结果的 ltSpeed、pace、lh、mh、rows、userInfo），并在可获取到模型信息时于标题 `【乳酸阈值日志分析结果】` 后追加签名行 `（by <model-name> | reasoning=<effort>）`。
 若未显式传参，脚本会依次尝试环境变量与 `~/.codex/config.toml`（`model`、`model_reasoning_effort`）；若仍无法解析则跳过签名行，不报错。
 
-**数值分析（Feature 1）**：自动计算每个样本 CSV 的 maxHR（最大心率）和 avgSpeed（平均速度），并与算法输出进行以下阈值检查，异常项会以 ⚠️ 标注在评论中：
+**数值分析（Feature 1）**：自动计算每个样本 CSV 的 maxHR（最大心率）和 avgSpeed（平均速度），并与算法输出进行以下辅助检查，异常项会以 ⚠️ 标注在评论中。该检查不能替代上面的出值条件分析：
 - 乳酸阈心率 < maxHR × 0.9 → 阈心率偏低
 - 乳酸阈心率 >= maxHR → 阈心率异常偏高
 - 有氧阈上限(mh) < maxHR → 有氧上限未覆盖到最大心率
@@ -206,8 +221,8 @@ AI agent 按以下结构输出 Markdown 报告。具体数据由 `csv_deep_analy
 
 ### 数据处理要点
 
-1. **SPEED 单位**：CSV 中 SPEED 列单位为 **km/h**（千米每小时）。Python 中配速计算：`pace_min_km = 60.0 / speed_kmh`。
-2. **距离累积**：`cum_dist += speed_kmh / 3600.0`（每行代表 1 秒，除以 3600 将 km/h 转换为 km/s）。
+1. **SPEED 单位**：`gomore_log_to_csv.py` 生成的 CSV 中 SPEED 按 km/h 处理；配速计算使用 `pace_min_km = 60.0 / speed_kmh`。直接 FIT 的速度单位需单独确认。
+2. **距离累积**：工具生成 CSV 按 km/h 处理，使用 `cum_dist += speed_kmh / 3600.0`（每行约 1 秒）。如果输入明确为 m/s，才使用 `speed_mps / 1000.0`。
 3. **userInfo 字段**：CSV 第 24 列（0-based index **23**，注意不是 24），格式 `"{age}.0,{gender}.0,{height}.0,{weight}.0,-1.0,{hr_rest}.0,-1.0"`。各字段含义：
    - `age` — 年龄，用于 HRmax 估算（220 - age）
    - `gender` — 性别，1=男，0=女

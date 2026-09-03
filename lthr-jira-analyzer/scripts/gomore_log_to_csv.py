@@ -228,9 +228,10 @@ def extract_userinfo_from_old_log(content: str) -> str:
 
 
 # 算法输出解析正则
-RE_LTSPEED = re.compile(r"ltSpeed\s*=\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
-RE_LH = re.compile(r"\blh\s*=\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
-RE_MH = re.compile(r"\bmh\s*=\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
+RE_LTSPEED = re.compile(r"ltSpeed\s*=\s*(-?[0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
+RE_LH = re.compile(r"\blh\s*=\s*(-?[0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
+RE_MH = re.compile(r"\bmh\s*=\s*(-?[0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
+RE_GUIDE_RESULT = re.compile(r"\bguideResult\s*=\s*(-?[0-9]+)", re.IGNORECASE)
 
 
 def convert_speed_to_pace_str(speed_kmh: float) -> str:
@@ -258,11 +259,19 @@ def extract_alg_outputs(content: str):
         lt = RE_LTSPEED.search(line)
         lh = RE_LH.search(line)
         mh = RE_MH.search(line)
-        if lt or lh or mh:
+        guide = RE_GUIDE_RESULT.search(line)
+        if lt or lh or mh or guide:
             lt_val = float(lt.group(1)) if lt else None
             lh_val = float(lh.group(1)) if lh else None
             mh_val = float(mh.group(1)) if mh else None
-            results.append({'pos': m.start(), 'line': line, 'ltSpeed': lt_val, 'lh': lh_val, 'mh': mh_val})
+            results.append({
+                'pos': m.start(),
+                'line': line,
+                'ltSpeed': lt_val,
+                'lh': lh_val,
+                'mh': mh_val,
+                'guideResult': int(guide.group(1)) if guide else None,
+            })
     return results
 
 
@@ -706,7 +715,7 @@ JSON 输出（--json）示例：
             if algs_in_seg:
                 ar = algs_in_seg[0]
                 lt = ar.get('ltSpeed')
-                alg_entry = {'ltSpeed': lt, 'lh': ar.get('lh'), 'mh': ar.get('mh'), 'pace': convert_speed_to_pace_str(lt) if lt is not None else None}
+                alg_entry = {'ltSpeed': lt, 'lh': ar.get('lh'), 'mh': ar.get('mh'), 'guideResult': ar.get('guideResult'), 'pace': convert_speed_to_pace_str(lt) if lt is not None else None}
 
             try:
                 userinfo_list = [float(x) for x in userinfo_arg.split(',')]
@@ -877,7 +886,7 @@ JSON 输出（--json）示例：
                 lt = alg_result.get('ltSpeed')
                 lh = alg_result.get('lh')
                 mh = alg_result.get('mh')
-                alg_entry = {'ltSpeed': lt, 'lh': lh, 'mh': mh, 'pace': convert_speed_to_pace_str(lt) if lt is not None else None}
+                alg_entry = {'ltSpeed': lt, 'lh': lh, 'mh': mh, 'guideResult': alg_result.get('guideResult'), 'pace': convert_speed_to_pace_str(lt) if lt is not None else None}
 
             # parse userinfo into list
             try:
@@ -961,7 +970,7 @@ JSON 输出（--json）示例：
     if alg_results:
         for r in alg_results:
             lt = r.get('ltSpeed')
-            alg_list.append({'ltSpeed': lt, 'lh': r.get('lh'), 'mh': r.get('mh'), 'pace': convert_speed_to_pace_str(lt) if lt is not None else None})
+            alg_list.append({'ltSpeed': lt, 'lh': r.get('lh'), 'mh': r.get('mh'), 'guideResult': r.get('guideResult'), 'pace': convert_speed_to_pace_str(lt) if lt is not None else None})
 
     single_res = {
         'index': 1,
