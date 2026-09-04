@@ -21,7 +21,8 @@ python3 gomore_log_to_csv.py /path/to/log.log /tmp/my.csv
 python3 gomore_log_to_csv.py /path/to/log.log -s 31 -u "30.0,0.0,170.0,60.0,-1.0,55.0,-1.0"
 
 备注：脚本会在日志中查找 `_processGomoreAlgo` 并在周围上下文解析 `utcTimeStamp`/`timestamp`、`timeZoneOffset`、`hrRef`/`HR`/`hr`、`speedRef`/`SPEED`/`sd` 等字段。
-若缺失 `utcTimeStamp`，脚本会使用自增时间戳保证时间单调递增。
+分段日志优先使用 `sport cmd` 所在行打印的设备时钟；再以 GoMore enable 的 `rtc/tz` 换算为 epoch。
+只有两类真实时间都缺失时，才使用自增时间戳作为最后兜底。
 
 """
 
@@ -31,6 +32,8 @@ import re
 import csv
 import time
 import argparse
+import calendar
+from datetime import datetime
 from typing import List, Tuple
 import json
 
@@ -42,6 +45,7 @@ RE_UTC = re.compile(r"utcTimeStamp\s*[:=]\s*(\d{9,12})", re.IGNORECASE)
 RE_TIMESTAMP = re.compile(r"\btimestamp\s*[:=]\s*(\d{9,12})", re.IGNORECASE)
 RE_NUM_TS = re.compile(r"\b(1[5-9]\d{8,10})\b")  # 10+位，简单检测 epoch-like
 RE_TZ = re.compile(r"timeZoneOffset\s*[:=]\s*([+-]?\d+)", re.IGNORECASE)
+RE_ANY_TZ = re.compile(r"\btz\s*[:=]\s*([+-]?\d+)", re.IGNORECASE)
 RE_HR = re.compile(r"(?:hrRef|HR|hr|rh)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
 RE_SPEED = re.compile(r"(?:speedRef|SPEED|sd)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
 RE_SPRT_GMS = re.compile(
@@ -56,6 +60,45 @@ RE_OLD_GOMORECFG = re.compile(r"_gomoreSdkConfig[^\n\r]*", re.IGNORECASE)
 RE_ALG_GM_C = re.compile(r"ALG_GM[^\n\r]*\bc\s*([0-9eE+\-., \t]+)", re.IGNORECASE)
 # store last matched line for diagnostics
 LAST_PARSED_USERINFO_LINE = None
+
+
+def _line_bounds(text: str, pos: int) -> Tuple[int, int]:
+    """Return the bounds of the physical log line that contains *pos*."""
+    start = text.rfind('\n', 0, pos) + 1
+    end = text.find('\n', pos)
+    return start, len(text) if end == -1 else end
+
+
+def _log_clock_at(text: str, pos: int):
+    """Read the device local clock printed in a log line.
+
+    Typical sport logs use ``I>09/03 05:06:04.796``.  This is deliberately
+    line-local: nearby lines may belong to another asynchronous module.
+    """
+    start, end = _line_bounds(text, pos)
+    m = re.search(r"\b(\d{1,2})/(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?", text[start:end])
+    if not m:
+        return None
+    return tuple(int(v) for v in m.groups())
+
+
+def _clock_delta_seconds(anchor_clock, event_clock, year: int) -> int:
+    """Return event - anchor in local clock seconds, including date rollover."""
+    anchor = datetime(year, *anchor_clock)
+    event = datetime(year, *event_clock)
+    delta = (event - anchor).total_seconds()
+    # Logs can span New Year.  Pick the closest plausible occurrence.
+    if delta < -180 * 86400:
+        event = datetime(year + 1, *event_clock)
+    elif delta > 180 * 86400:
+        event = datetime(year - 1, *event_clock)
+    return int((event - anchor).total_seconds())
+
+
+def _filename_date(input_name: str):
+    """Return YYYYMMDD from the usual device-log filename, if available."""
+    m = re.search(r"(?<!\d)(20\d{6})(?:[_-]?\d{6})?", input_name or '')
+    return m.group(1) if m else None
 
 
 
@@ -324,14 +367,19 @@ def _normalize_epoch_candidate(val: int) -> int:
 
 
 def find_enable_disable_pairs(content: str):
-    """寻找 start/end 配对（enable -> disable），并尽量从 start 行提取 rtc 值（作为 segment 起点）。
+    """寻找 start/end 配对，并提取其真实时间锚点。
 
-    返回列表，每项为 dict: {'start_pos': int, 'end_pos': int, 'rtc': int|None}
+    ``sport cmd`` 会打印设备本地时钟，因此优先把它作为行时间锚点；
+    GoMore enable 中的 rtc/tz 只用来把该本地时钟换算为 epoch。
     """
     # 更精确的enable匹配：避免误匹配 StartInput.workoutType，只匹配明确的enable动作
     re_start = re.compile(r"GoMore\s+enable|enable.*Gomore|ALG_GM[^\n]*enable|GoMore\s+enabled|\benable\s+GoMore|_enableGomoreAlgo", re.IGNORECASE)
     re_end = re.compile(r"_disableGomoreAlgo|disable.*Gomore", re.IGNORECASE)
     re_rtc = re.compile(r"rtc\s*[:=]\s*(\d{6,20})", re.IGNORECASE)
+    re_sport_cmd_start = re.compile(
+        r"sport\s+start\s+time|sport\s+cmd\s*=\s*1\b|(?:cmd|command)\s+START\b",
+        re.IGNORECASE,
+    )
 
     starts_matches = list(re_start.finditer(content))
     ends = [m.start() for m in re_end.finditer(content)]
@@ -352,7 +400,8 @@ def find_enable_disable_pairs(content: str):
         if ei >= len(ends):
             break
         e = ends[ei]
-        # try extract rtc near the start match
+        # The enable line normally carries rtc/tz.  Do not use arbitrary epoch
+        # values near a sample record: they frequently belong to another task.
         ctx_start = max(0, s - CTX_BACK)
         ctx_end = min(len(content), s + CTX_FWD)
         ctx = content[ctx_start:ctx_end]
@@ -364,7 +413,31 @@ def find_enable_disable_pairs(content: str):
                 rtc_val = _normalize_epoch_candidate(candidate)
             except Exception:
                 rtc_val = None
-        pairs.append({'start_pos': s, 'end_pos': e, 'rtc': rtc_val})
+        tz_val = None
+        tz_matches = list(RE_ANY_TZ.finditer(ctx))
+        if tz_matches:
+            # For this log family SPRT_GMS may print a bit-field before the
+            # ALG_GM line.  The last tz in the enable context is the actual
+            # GoMore minute offset (for example tz=480), so use it.
+            try:
+                tz_val = int(tz_matches[-1].group(1))
+            except Exception:
+                pass
+
+        # Prefer the sport command clock.  It still exists in logs where the
+        # GoMore data lines contain no timestamp at all.
+        cmd_begin = max(0, s - 2000)
+        cmd_end = min(len(content), s + 2000)
+        cmd_match = re_sport_cmd_start.search(content[cmd_begin:cmd_end])
+        cmd_pos = cmd_begin + cmd_match.start() if cmd_match else None
+        time_anchor_pos = cmd_pos if cmd_pos is not None else s
+        pairs.append({
+            'start_pos': s,
+            'end_pos': e,
+            'rtc': rtc_val,
+            'tz': tz_val,
+            'time_anchor_pos': time_anchor_pos,
+        })
         last_paired_end = e
         ei += 1
     return pairs
@@ -478,16 +551,44 @@ def allocate_output_csv_path(out_dir: str, base_template: str, base_ts: int, use
         ts += 1
 
 
-def normalize_segment_timestamps(seg: List[dict], rtc_anchor: int = None):
-    """对单个分段做时间戳归一化，避免跨分段互相影响。"""
+def normalize_segment_timestamps(seg: List[dict], rtc_anchor: int = None,
+                                 tz_anchor: int = None, content: str = None,
+                                 time_anchor_pos: int = None,
+                                 input_name: str = ''):
+    """Use log clocks to normalize one segment without compressing pauses.
+
+    When ``rtc`` is available, derive every event timestamp from the device
+    clock printed on its own log line.  With no rtc, use the log filename date
+    plus the same clocks as a deterministic fallback.  The old ``+1`` path is
+    retained only for logs that expose neither kind of real time.
+    """
     if not seg:
         return
 
-    if rtc_anchor is not None:
-        base = int(rtc_anchor)
-        for i, r in enumerate(seg):
-            r['utc'] = base + i
-        return
+    tz = int(tz_anchor) if tz_anchor is not None else 0
+    anchor_clock = (_log_clock_at(content, time_anchor_pos)
+                    if content is not None and time_anchor_pos is not None else None)
+    if anchor_clock and content is not None:
+        if rtc_anchor is not None:
+            base = int(rtc_anchor)
+            year = time.gmtime(base + tz * 60).tm_year
+            for r in seg:
+                clock = _log_clock_at(content, r['pos'])
+                if clock:
+                    r['utc'] = base + _clock_delta_seconds(anchor_clock, clock, year)
+                    r['raw_utc'] = r['utc']
+                    r['tz'] = tz
+        else:
+            date = _filename_date(input_name)
+            if date:
+                year, month, day = int(date[:4]), int(date[4:6]), int(date[6:8])
+                base = calendar.timegm(datetime(year, month, day, *anchor_clock[2:]).timetuple()) - tz * 60
+                for r in seg:
+                    clock = _log_clock_at(content, r['pos'])
+                    if clock:
+                        r['utc'] = base + _clock_delta_seconds(anchor_clock, clock, year)
+                        r['raw_utc'] = r['utc']
+                        r['tz'] = tz
 
     # 无 rtc 锚点时，优先使用每行原始时间戳并在分段内保证单调递增
     seed = None
@@ -600,7 +701,7 @@ def main():
 
 行为要点：
   - 优先按 enable -> disable 配对导出（每个完整对生成一个 CSV，文件名示例：gomore_data_YYYYMMDD_HHMMSS.csv）。
-  - 若 start 行含 rtc，会以 rtc 为段起点并保证 TIMESTAMP 为秒且单调递增（必要时做修正）。
+  - CSV 时间优先由 sport cmd 日志行的真实设备时钟生成，并使用 GoMore enable 的 rtc/tz 校准；没有 rtc 时可从日志文件日期兜底。
   - 未被任何完整段覆盖的原始行仅在 --debug 时导出为 gomore_uncovered_lines_*.log。
 
 JSON 输出（--json）示例：
@@ -712,17 +813,26 @@ JSON 输出（--json）示例：
             start_pos = pair.get('start_pos')
             end_pos = pair.get('end_pos')
             rtc_anchor = pair.get('rtc')
+            tz_anchor = pair.get('tz')
+            time_anchor_pos = pair.get('time_anchor_pos')
             seg = [r for r in rows if r['pos'] >= start_pos and r['pos'] < end_pos]
             algs_in_seg = [ar for ar in alg_results if ar['pos'] >= start_pos and ar['pos'] < end_pos]
             if not seg:
                 print(f"Segment #{idx} between enable@{start_pos} and disable@{end_pos} has no rows - skipped (incomplete)", flush=True)
                 continue
             if debug:
-                print(f"[DEBUG] Segment #{idx}: start={start_pos} end={end_pos} rtc={rtc_anchor} rows_in_seg={len(seg)} algs_in_seg={len(algs_in_seg)}", flush=True)
+                print(f"[DEBUG] Segment #{idx}: start={start_pos} end={end_pos} rtc={rtc_anchor} tz={tz_anchor} time_anchor={time_anchor_pos} rows_in_seg={len(seg)} algs_in_seg={len(algs_in_seg)}", flush=True)
             total_covered += len(seg)
 
             # 关键修正：每个分段独立校正时间，避免第二段起点受第一段影响
-            normalize_segment_timestamps(seg, rtc_anchor=rtc_anchor if rtc_anchor else None)
+            normalize_segment_timestamps(
+                seg,
+                rtc_anchor=rtc_anchor if rtc_anchor else None,
+                tz_anchor=tz_anchor,
+                content=content,
+                time_anchor_pos=time_anchor_pos,
+                input_name=input_name,
+            )
 
             first_utc = seg[0]['utc']
             outpath, _resolved_name_ts = allocate_output_csv_path(out_dir, base_template, first_utc, used_output_paths)
