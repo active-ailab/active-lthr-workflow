@@ -381,6 +381,22 @@ def upload_csvs(zepp_cmd, issue_key, csv_paths):
     run_cmd(zepp_cmd + ["jira", "attachment", "add", issue_key] + [str(p) for p in csv_paths])
 
 
+def generate_plots(plot_script, csv_paths):
+    """Generate one HR/SPEED SVG per CSV without failing the CSV workflow."""
+    plots = []
+    for csv_path in csv_paths:
+        out_path = csv_path.with_name(f"{csv_path.stem}_hr_speed.svg")
+        result = run_cmd(
+            [sys.executable, str(plot_script), str(csv_path), "-o", str(out_path)],
+            check=False,
+        )
+        if result.returncode == 0 and out_path.is_file():
+            plots.append(out_path)
+        else:
+            print(f"[PLOT WARN] Failed to plot {csv_path.name}: {result.stderr.strip()}", flush=True)
+    return plots
+
+
 def add_comment(zepp_cmd, issue_key, comment):
     run_cmd(zepp_cmd + ["jira", "comment", "add", issue_key, comment])
 
@@ -650,6 +666,7 @@ def analyze_one_issue(
     issue_key,
     root_work_dir,
     parser_script,
+    plot_script=None,
     explicit_log="",
     post_comment=True,
     signature="",
@@ -729,7 +746,8 @@ def analyze_one_issue(
             csv_paths = [Path(r.get("csv")) for r in results if r.get("csv")]
             source_channel = "feedback"
 
-    upload_csvs(zepp_cmd, issue_key, csv_paths)
+    plot_paths = generate_plots(plot_script, csv_paths) if plot_script else []
+    upload_csvs(zepp_cmd, issue_key, csv_paths + plot_paths)
 
     # Build comment with anomaly analysis (Feature 1)
     comment = build_comment(issue_meta, source_txt, parse_json, signature=signature, root_work_dir=root_work_dir)
@@ -756,6 +774,7 @@ def analyze_one_issue(
         "source_txt": str(source_txt),
         "csv_count": len(csv_paths),
         "csv_paths": [str(p) for p in csv_paths],
+        "plot_paths": [str(p) for p in plot_paths],
         "result_count": len(results),
         "comment": comment,
         "lark_collected": lark_collected,
@@ -825,6 +844,7 @@ def main():
     parser.add_argument("--reasoning-effort", default="", help="Reasoning effort for Jira comment signature")
     parser.add_argument("--no-comment", action="store_true", help="Do not post Jira comments")
     parser.add_argument("--collect-sample", action="store_true", help="Upload sample CSVs to Feishu Drive GomoreSDK_Report/data_sample/JIRA_CASE/")
+    parser.add_argument("--plot", action="store_true", help="Generate and upload HR/SPEED SVGs for each CSV")
     parser.add_argument("--report", default="", help="Batch report output path (.md)")
     args = parser.parse_args()
 
@@ -836,6 +856,9 @@ def main():
     parser_script = script_dir / "gomore_log_to_csv.py"
     if not parser_script.exists():
         raise RuntimeError(f"Parser script not found: {parser_script}")
+    plot_script = script_dir / "plot_gomore_hr_speed_svg.py"
+    if args.plot and not plot_script.exists():
+        raise RuntimeError(f"Plot script not found: {plot_script}")
 
     temp_root = Path(tempfile.gettempdir()) / "topic_ota"
     root_work_dir = Path(args.work_dir) if args.work_dir else temp_root
@@ -852,13 +875,14 @@ def main():
             issue_key=key,
             root_work_dir=root_work_dir,
             parser_script=parser_script,
+            plot_script=plot_script if args.plot else None,
             explicit_log=args.txt_log if len(issue_keys) == 1 else "",
             post_comment=(not args.no_comment),
             signature=signature,
             collect_to_lark=args.collect_sample,
         )
         summaries.append(s)
-        print(f"[OK] {key} | csv={s['csv_count']} | source={Path(s['source_txt']).name}")
+        print(f"[OK] {key} | csv={s['csv_count']} | plot={len(s['plot_paths'])} | source={Path(s['source_txt']).name}")
 
     if len(issue_keys) > 1:
         if args.report:
