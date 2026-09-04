@@ -528,7 +528,8 @@ def _extract_datetime_from_filename(fname: str) -> str:
     return m.group(1) if m else ''
 
 
-def allocate_output_csv_path(out_dir: str, base_template: str, base_ts: int, used_paths: set) -> Tuple[str, int]:
+def allocate_output_csv_path(out_dir: str, base_template: str, base_ts: int, used_paths: set,
+                             tz_minutes: int = 0) -> Tuple[str, int]:
     """为 CSV 分配不冲突路径。
 
     规则：
@@ -541,7 +542,7 @@ def allocate_output_csv_path(out_dir: str, base_template: str, base_ts: int, use
         ts = int(time.time())
 
     while True:
-        dt = time.strftime('%Y%m%d_%H%M%S', time.gmtime(ts))
+        dt = time.strftime('%Y%m%d_%H%M%S', time.gmtime(ts + tz_minutes * 60))
         filename = f"{base_template.format(dt=dt)}.csv"
         outpath = os.path.abspath(os.path.normpath(os.path.join(out_dir, filename)))
         key = os.path.normcase(outpath)
@@ -835,7 +836,8 @@ JSON 输出（--json）示例：
             )
 
             first_utc = seg[0]['utc']
-            outpath, _resolved_name_ts = allocate_output_csv_path(out_dir, base_template, first_utc, used_output_paths)
+            outpath, _resolved_name_ts = allocate_output_csv_path(
+                out_dir, base_template, first_utc, used_output_paths, seg[0]['tz'])
 
             tuples = [(r['utc'], r['tz'], r['hr'], r['speed']) for r in seg]
             try:
@@ -1002,7 +1004,8 @@ JSON 输出（--json）示例：
             segments_covered += len(seg)
             normalize_segment_timestamps(seg)
             first_utc = seg[0]['utc']
-            outpath, _resolved_name_ts = allocate_output_csv_path(out_dir, base_template, first_utc, used_output_paths)
+            outpath, _resolved_name_ts = allocate_output_csv_path(
+                out_dir, base_template, first_utc, used_output_paths, seg[0]['tz'])
             tuples = [(r['utc'], r['tz'], r['hr'], r['speed']) for r in seg]
             try:
                 write_csv(tuples, outpath, sport_type=sport_type_arg, userinfo=userinfo_arg)
