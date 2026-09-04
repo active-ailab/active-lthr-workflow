@@ -44,6 +44,13 @@ RE_NUM_TS = re.compile(r"\b(1[5-9]\d{8,10})\b")  # 10+位，简单检测 epoch-l
 RE_TZ = re.compile(r"timeZoneOffset\s*[:=]\s*([+-]?\d+)", re.IGNORECASE)
 RE_HR = re.compile(r"(?:hrRef|HR|hr|rh)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
 RE_SPEED = re.compile(r"(?:speedRef|SPEED|sd)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)", re.IGNORECASE)
+RE_SPRT_GMS = re.compile(
+    r"SPRT_GMS\s+rh\s*=\s*([+-]?[0-9]+(?:\.[0-9]+)?)\s*,\s*"
+    r"sd\s*=\s*([+-]?[0-9]+(?:\.[0-9]+)?)\s*,\s*"
+    r"state\s*=\s*([0-9]+)",
+    re.IGNORECASE,
+)
+SPRT_GMS_RUNNING_STATE = 2
 RE_OLD_GOMORECFG = re.compile(r"_gomoreSdkConfig[^\n\r]*", re.IGNORECASE)
 # 匹配 ALG_GM 行中可能的 c <7数字> 格式
 RE_ALG_GM_C = re.compile(r"ALG_GM[^\n\r]*\bc\s*([0-9eE+\-., \t]+)", re.IGNORECASE)
@@ -142,14 +149,32 @@ def parse_log(content: str) -> List[dict]:
 
     改进：保持时间单调递增；若捕获到非单调或缺失时间则基于 last_utc 修正。
     """
-    positions = [m.start() for m in re.finditer(r"_processGomoreAlgo|SPRT_GMS\s*rh", content)]
-    if not positions:
+    sprt_matches = list(RE_SPRT_GMS.finditer(content))
+    process_positions = [m.start() for m in re.finditer(r"_processGomoreAlgo", content)]
+    if not sprt_matches and not process_positions:
         return []
 
     rows = []
     last_utc = None
-    for pos in positions:
+    # SPRT_GMS carries the sport state on the same line.  Prefer it whenever
+    # available so paused/stopped records do not enter the replay sample.
+    # Keep all running-state values, including invalid HR/speed sentinels.
+    events = []
+    if sprt_matches:
+        for m in sprt_matches:
+            if int(m.group(3)) != SPRT_GMS_RUNNING_STATE:
+                continue
+            events.append((m.start(), float(m.group(1)), float(m.group(2))))
+    else:
+        # Older logs may only contain the actual process-call marker and have
+        # no sport state field to filter on.
+        events = [(pos, None, None) for pos in process_positions]
+
+    for pos, event_hr, event_speed in events:
         utc, tz, hr, speed = extract_fields_around(content, pos)
+        if event_hr is not None:
+            hr = event_hr
+            speed = event_speed
         # 如果没有找到 utc，则用基于 last_utc 的自增时间戳
         if utc == -1 or utc is None:
             if last_utc is not None:
