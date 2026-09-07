@@ -265,7 +265,7 @@ def build_comment(issue_meta, source_txt, parse_json, signature, root_work_dir=N
 
 
 def extract_lthr_log_metadata(log_path):
-    """Extract gate-related fields while preserving maxHr array order."""
+    """Extract gate-related fields with the log's output semantics."""
     try:
         text = log_path.read_text(encoding="utf-8", errors="replace")
     except Exception:
@@ -274,29 +274,48 @@ def extract_lthr_log_metadata(log_path):
     def numbers(value):
         return [float(x) for x in re.findall(r"-?(?:\d+\.\d+|\d+)", value)]
 
-    max_hr_history = []
-    value_counts = []
+    max_hr_values = []
+    value_count = None
+    workout_score = None
+    fit_app_score = None
     lt_pace = []
     lt_hr = []
     process_status = []
     for line in text.splitlines():
         lower = line.lower()
-        # The last positive value in the EHisPd[maxHr] array is the value used
-        # for this analysis. Do not use SPT_S_SY/UI maxhr fields here.
+        # Use the first valid value in the EHisPd[maxHr] output for this
+        # run's gate. Do not use SPT_S_SY/UI maxhr fields here.
         if re.search(r"ehispd.*maxhr", lower):
-            max_hr_history.extend(numbers(line.split("=", 1)[-1]))
+            max_hr_values = numbers(line.split("=", 1)[-1])
         if "valuecount" in lower:
-            value_counts.extend(numbers(line.split("=", 1)[-1]))
-        if "ltpace" in lower:
-            lt_pace.extend(numbers(line.split("=", 1)[-1]))
-        if "lthr" in lower:
-            lt_hr.extend(numbers(line.split("=", 1)[-1]))
+            values = numbers(line.split("=", 1)[-1])
+            if values:
+                value_count = values[0]
+            if len(values) > 1:
+                workout_score = values[1]
+        if re.search(r"\[gomore\]\[fitapp\]=", lower):
+            values = numbers(line.split("=", 1)[-1])
+            if values:
+                # The fitApp line after valueCount carries the aggregate
+                # score; use its final numeric field.
+                fit_app_score = values[-1]
+        # Only read the bracketed GoMore result fields. In particular,
+        # SPT_S_SY _queryLtHr 170 is a UI query value, not the final GoMore
+        # ltHr output and must not be reported as the log-end result.
+        pace_match = re.search(r"\[ltpace\]\s*=\s*(-?(?:\d+\.\d+|\d+))", lower)
+        if pace_match:
+            lt_pace.append(float(pace_match.group(1)))
+        hr_match = re.search(r"\[lthr\]\s*=\s*(-?(?:\d+\.\d+|\d+))", lower)
+        if hr_match:
+            lt_hr.append(float(hr_match.group(1)))
         if "process completed" in lower:
             process_status.append(line.strip())
 
     return {
-        "max_hr_history": max_hr_history,
-        "value_count": value_counts[-1] if value_counts else None,
+        "max_hr_values": max_hr_values,
+        "value_count": value_count,
+        "workout_score": workout_score,
+        "fit_app_score": fit_app_score,
         "lt_pace": lt_pace[-1] if lt_pace else None,
         "lt_hr": lt_hr[-1] if lt_hr else None,
         "process_status": process_status[-1] if process_status else None,
@@ -345,9 +364,9 @@ def build_gate_analysis(source_txt, results):
     except (TypeError, ValueError):
         return ["  * 出值条件分析: age/hrRest 无法解析，无法计算 70%HRR 门槛"]
 
-    history = [v for v in metadata.get("max_hr_history", []) if v > 0]
-    max_hr = history[-1] if history else (208 - age * 0.7)
-    max_hr_source = "EHisPd[maxHr]排列中最后一个有效值" if history else "默认公式 208-age×0.7"
+    max_hr_values = [v for v in metadata.get("max_hr_values", []) if v > 0]
+    max_hr = max_hr_values[0] if max_hr_values else (208 - age * 0.7)
+    max_hr_source = "EHisPd[maxHr]按日志顺序第一个有效值" if max_hr_values else "默认公式 208-age×0.7（无有效历史值）"
     hr_gate = (max_hr - rest_hr) * 0.7 + rest_hr
     parts = [
         f"userInfo(age={age:g}, restHR={rest_hr:g})",
@@ -355,7 +374,11 @@ def build_gate_analysis(source_txt, results):
         f"门槛=HR>{hr_gate:.1f}bpm 且 SPEED>6kph，时间>720s",
     ]
     if metadata.get("value_count") is not None:
-        parts.append(f"SDK valueCount={metadata['value_count']:g}")
+        score = metadata.get("workout_score")
+        score_text = f", 本次评分={score:g}" if score is not None else ""
+        parts.append(f"SDK valueCount有效点数={metadata['value_count']:g}{score_text}")
+    if metadata.get("fit_app_score") is not None:
+        parts.append(f"GoMoRe fitApp综合历史评分={metadata['fit_app_score']:g}")
     if metadata.get("lt_pace") is not None or metadata.get("lt_hr") is not None:
         parts.append(f"日志结束字段 ltPace={metadata.get('lt_pace', '-')}, ltHr={metadata.get('lt_hr', '-')}")
     if metadata.get("process_status"):

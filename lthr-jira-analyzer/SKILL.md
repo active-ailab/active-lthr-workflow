@@ -104,12 +104,12 @@ GoMore 乳酸阈（LTHR）算法**仅在以下运动类型下生效**：
 
 - 出值基础条件：`HR > 70%HRR`、`SPEED > 6 kph`，且同时满足时间超过 `720 s`。
 - `70%HRR = (MaxHR - RestHR) × 70% + RestHR`。
-- `MaxHR` 优先取日志中 `EHisPd[maxHr]` 排列的最后一个有效值；没有有效历史值时使用 `208 - age × 0.7`。`SPT_S_SY` 或界面侧 `maxhr` 不参与此取值。
+- `EHisPd[maxHr]` 的本次输出中，按日志顺序取第一个有效值作为本次计算使用的 `MaxHR`；如果不存在有效值，则使用默认公式 `208 - age × 0.7`。`SPT_S_SY` 或界面侧 `maxhr` 不参与此取值。
 - `gomore_log_to_csv.py` 生成的样本 CSV 中 `SPEED` 按日志原值处理；当前工具链中该值为 km/h，可直接与 6 kph 比较。直接读取原始 FIT 时，需先确认其字段单位，不能混用两种口径。
-- 原始 CSV/FIT 的逐点统计和 SDK 日志中的 `valueCount` 分开记录，不能相互替代。
-- 同时核对 `ltPace`、`ltHr`、`Gomore output`、`guideResult` 以及处理状态。
+- 原始 CSV/FIT 的逐点统计和 SDK 日志中的 `valueCount` 分开记录，不能相互替代。日志 `[GoMoRe][fit][valueCount]=A B` 中，第一个值 `A` 才是本次有效点数个数，第二个值 `B` 是本次运动评分；随后 `[GoMoRe][fitApp]=` 的评分是综合历史数据后的综合评分，需单独记录，不能把它们混为点数或 `MaxHR`。
+- 同时核对 GoMore 结果行中的 `[ltPace]=`、`[ltHr]=`、`Gomore output`、`guideResult` 以及处理状态。不要把 `SPT_S_SY _queryLtHr <value>` 的界面查询值当成日志结束 `ltHr`。
 
-分析顺序：确认样本对应关系 → 读取 age/restHR → 确认历史 MaxHR → 计算 HR 门槛 → 统计 HR/速度/同时达标点 → 核对 `valueCount` 和最终输出 → 再判断未出值原因。
+分析顺序：确认样本对应关系 → 读取 age/restHR → 从 `EHisPd[maxHr]` 按日志顺序取第一个有效值（否则使用默认值）→ 计算 HR 门槛 → 统计 HR/速度/同时达标点 → 分开核对 `valueCount` 有效点数、本次评分、`fitApp` 综合历史评分和最终输出 → 再判断未出值原因。
 
 结论边界：同时满足 HR 和速度条件不等于一定出值，还需结合 SDK 内部有效性、历史乳酸阈状态和实际处理结果。`SPT_S_SY` 中的运动心率区间 `maxhr` 不能替代 `EHisPd[maxHr]`。
 
