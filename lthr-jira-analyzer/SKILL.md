@@ -106,12 +106,13 @@ GoMore 乳酸阈（LTHR）算法**仅在以下运动类型下生效**：
 - `70%HRR = (MaxHR - RestHR) × 70% + RestHR`。
 - `[GoMoRe][EHisPd][maxHr]` 会记录最近最多 7 次 `maxHR`，最新记录在最右侧；只有 `-1` 是无效数据，其他数值均为有效记录。只有 1 个有效记录时，说明历史仍使用默认值，本次使用默认公式 `220 - age`；有 2 个或以上有效记录时，取最右侧前一个记录作为本次运动使用的 `MaxHR`。`SPT_S_SY` 或界面侧 `maxhr` 不参与此取值。
 - `gomore_log_to_csv.py` 生成的样本 CSV 中 `SPEED` 按日志原值处理；当前工具链中该值为 km/h，可直接与 6 kph 比较。直接读取原始 FIT 时，需先确认其字段单位，不能混用两种口径。
-- 原始 CSV/FIT 的逐点统计和 SDK 日志中的 `valueCount` 分开记录，不能相互替代。日志 `[GoMoRe][fit][valueCount]=A B` 中，第一个值 `A` 才是本次有效点数个数，第二个值 `B` 是本次运动评分；随后 `[GoMoRe][fitApp]=` 的评分是综合历史数据后的综合评分，需单独记录，不能把它们混为点数或 `MaxHR`。
+- 原始 CSV/FIT 的逐点统计和 SDK 日志中的 `valueCount` 分开记录，不能相互替代。日志 `[GoMoRe][fit][valueCount]=A B` 中，第一个值 `A` 才是本次实际有效点数，第二个值 `B` 是本次运动评分；随后 `[GoMoRe][fitApp]=` 的评分是综合历史数据后的综合评分，需单独记录，不能把它们混为点数或 `MaxHR`。
+- 评论中必须明确说明：根据 CSV/FIT 逐点计算出的 `HR > 70%HRR`、`SPEED > 6 kph`、同时满足时间超过 `720 s` 的条件，以及由此得到的同时达标点数，均属于 SDK 外部辅助判定；同时达标点数只能作为参考有效点数，不能宣称为 SDK 最终有效点数。实际有效点数必须以 SDK 日志 `[GoMoRe][fit][valueCount]` 的第一个值为准；若未解析到 `valueCount`，应明确写出“无法确认”，不能用外部统计补齐。
 - 同时核对 GoMore 结果行中的 `[ltPace]=`、`[ltHr]=`、`Gomore output`、`guideResult` 以及处理状态。不要把 `SPT_S_SY _queryLtHr <value>` 的界面查询值当成日志结束 `ltHr`。
 
-分析顺序：确认样本对应关系 → 读取 age/restHR → 读取 `[GoMoRe][EHisPd][maxHr]` 历史序列 → 仅 1 个记录时使用 `220-age`，否则取最右侧前一个记录作为本次 `MaxHR` → 计算 HR 门槛 → 统计 HR/速度/同时达标点 → 分开核对 `valueCount` 有效点数、本次评分、`fitApp` 综合历史评分和最终输出 → 再判断未出值原因。
+分析顺序：确认样本对应关系 → 读取 age/restHR → 读取 `[GoMoRe][EHisPd][maxHr]` 历史序列 → 仅 1 个记录时使用 `220-age`，否则取最右侧前一个记录作为本次 `MaxHR` → 计算外部辅助 HR 门槛 → 统计外部辅助 HR/速度/同时达标点（标为参考有效点数）→ 以 SDK 日志 `valueCount` 第一个值确认实际有效点数 → 分开核对本次评分、`fitApp` 综合历史评分和最终输出 → 再判断未出值原因。
 
-结论边界：同时满足 HR 和速度条件不等于一定出值，还需结合 SDK 内部有效性、历史乳酸阈状态和实际处理结果。`SPT_S_SY` 中的运动心率区间 `maxhr` 不能替代 `EHisPd[maxHr]`。
+结论边界：外部辅助条件满足及参考有效点数达到要求，不等于 SDK 一定出值；实际有效点数以 SDK 日志 `valueCount` 为准，还需结合 SDK 内部有效性、历史乳酸阈状态和实际处理结果。`SPT_S_SY` 中的运动心率区间 `maxhr` 不能替代 `EHisPd[maxHr]`。
 
 ## 输出
 

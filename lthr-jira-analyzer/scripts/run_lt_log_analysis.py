@@ -396,6 +396,7 @@ def build_gate_analysis(source_txt, results):
     max_hr, max_hr_source = resolve_gate_max_hr(max_hr_values, age)
     hr_gate = (max_hr - rest_hr) * 0.7 + rest_hr
     parts = [
+        "判定口径=以下 HR/SPEED/时间统计为 SDK 外部辅助判定，仅供参考",
         f"userInfo(age={age:g}, restHR={rest_hr:g})",
         f"MaxHR={max_hr:.1f}（{max_hr_source}）",
         f"门槛=HR>{hr_gate:.1f}bpm 且 SPEED>6kph，时间>720s",
@@ -406,7 +407,11 @@ def build_gate_analysis(source_txt, results):
     if metadata.get("value_count") is not None:
         score = metadata.get("workout_score")
         score_text = f", 本次评分={score:g}" if score is not None else ""
-        parts.append(f"SDK valueCount有效点数={metadata['value_count']:g}{score_text}")
+        parts.append(
+            f"SDK日志实际有效点数(valueCount第一个值)={metadata['value_count']:g}{score_text}"
+        )
+    else:
+        parts.append("SDK日志实际有效点数=valueCount未解析到，不能用外部统计替代")
     if metadata.get("fit_app_score") is not None:
         parts.append(f"GoMoRe fitApp综合历史评分={metadata['fit_app_score']:g}")
     if metadata.get("lt_pace") is not None or metadata.get("lt_hr") is not None:
@@ -422,9 +427,12 @@ def build_gate_analysis(source_txt, results):
         parts.append(
             f"Result #{i} HR有效/达标={stats['hr_valid']}/{stats['hr_pass']}, "
             f"速度有效/达标={stats['speed_valid']}/{stats['speed_pass']}, "
-            f"同时达标={stats['both_pass']}，{status}"
+            f"外部辅助同时达标={stats['both_pass']}（参考有效点数），辅助判定={status}"
         )
-    parts.append("结论边界=满足基础门槛不等于一定出值，需结合 SDK 有效性、历史状态和最终输出")
+    parts.append(
+        "结论边界=外部辅助同时达标点数不等于 SDK 最终有效点数；实际有效点数以 SDK 日志 valueCount 为准，"
+        "且满足基础门槛不等于一定出值，仍需结合历史状态和最终输出"
+    )
     return ["* 出值条件分析: " + "；".join(parts)]
 
 
