@@ -116,7 +116,7 @@ SPEED > 6 kph
 70%HRR = (MaxHR - RestHR) × 70% + RestHR
 ```
 
-`MaxHR` 优先读取日志中 `EHisPd[maxHr]` 排列的最后一个有效值；没有有效历史值时，按 `208 - age × 0.7` 计算。`SPT_S_SY` 或界面侧 `maxhr` 不参与此取值。`gomore_log_to_csv.py` 生成的 CSV 中 SPEED 按 km/h 处理，可直接与 6 kph 比较；直接读取 FIT 时需先确认单位。
+`[GoMoRe][EHisPd][maxHr]` 会记录最近最多 7 次 `maxHR`，最新记录在最右侧；只有 `-1` 是无效数据，其他数值均为有效记录。只有一个有效记录时，本次运动使用默认 `220 - age`；有两个或以上有效记录时，取最右侧前一个记录作为本次运动使用的 `MaxHR`。`SPT_S_SY` 或界面侧 `maxhr` 不参与此取值。`gomore_log_to_csv.py` 生成的 CSV 中 SPEED 按 km/h 处理，可直接与 6 kph 比较；直接读取 FIT 时需先确认单位。
 
 分析结果会分别记录：
 

@@ -257,7 +257,7 @@ def analyze_csv(path: str, age: Optional[int] = None,
     # 年龄
     userinfo_age = _get_userinfo_age(userinfo_raw)
     resolved_age = age or userinfo_age or 35  # fallback 35
-    hr_max_est = 208 - resolved_age * 0.7
+    hr_max_est = 220 - resolved_age
 
     # ==================== 每公里分段统计 ====================
     cum_dist = 0.0
@@ -501,7 +501,7 @@ def analyze_csv(path: str, age: Optional[int] = None,
     if lt_mh:
         lines.append(f"| 算法最大心率(mh) | **{lt_mh} bpm** | {(lt_mh/hr_max_est*100):.1f}% | - |")
     lines.append("")
-    lines.append(f"> 默认 HRmax (208-age×0.7 公式): 208 - {resolved_age}×0.7 = **{hr_max_est:.1f} bpm**")
+    lines.append(f"> 默认 HRmax (220-age 公式): 220 - {resolved_age} = **{hr_max_est:.1f} bpm**")
     lines.append("")
 
     lines.append("### 实际运动数据 vs 设备阈值")

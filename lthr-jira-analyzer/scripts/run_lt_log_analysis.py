@@ -283,8 +283,11 @@ def extract_lthr_log_metadata(log_path):
     process_status = []
     for line in text.splitlines():
         lower = line.lower()
-        # Use the first valid value in the EHisPd[maxHr] output for this
-        # run's gate. Do not use SPT_S_SY/UI maxhr fields here.
+        # EHisPd[maxHr] contains the recent history, with the newest value
+        # on the right. Keep the sequence so build_gate_analysis can apply
+        # the rule for the current run: one record means the SDK used the
+        # default maxHR; two or more records mean the previous (rightmost - 1)
+        # record was used. Do not use SPT_S_SY/UI maxhr fields here.
         if re.search(r"ehispd.*maxhr", lower):
             max_hr_values = numbers(line.split("=", 1)[-1])
         if "valuecount" in lower:
@@ -350,6 +353,31 @@ def compute_gate_stats(csv_path, hr_gate):
     return stats
 
 
+def resolve_gate_max_hr(max_hr_values, age):
+    """Resolve the maxHR used by the current GoMore run.
+
+    EHisPd[maxHr] stores recent values from left to right, with the newest
+    value on the right. Only -1 is invalid. A single valid stored value is the
+    initial/default history, so the current run uses the SDK default 220-age.
+    With two or more valid values, the value immediately before the newest one
+    is the current run's maxHR.
+    """
+    values = []
+    for value in max_hr_values or []:
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if value != -1:
+            values.append(value)
+    default_max_hr = 220 - float(age)
+    if len(values) >= 2:
+        return values[-2], "EHisPd[maxHr]倒数第二个值（本次运动使用）"
+    if len(values) == 1:
+        return default_max_hr, "默认公式 220-age（EHisPd[maxHr]仅有一个记录）"
+    return default_max_hr, "默认公式 220-age（无有效历史记录）"
+
+
 def build_gate_analysis(source_txt, results):
     """Build a source-based LTHR eligibility analysis for the Jira comment."""
     if not results:
@@ -364,15 +392,17 @@ def build_gate_analysis(source_txt, results):
     except (TypeError, ValueError):
         return ["  * 出值条件分析: age/hrRest 无法解析，无法计算 70%HRR 门槛"]
 
-    max_hr_values = [v for v in metadata.get("max_hr_values", []) if v > 0]
-    max_hr = max_hr_values[0] if max_hr_values else (208 - age * 0.7)
-    max_hr_source = "EHisPd[maxHr]按日志顺序第一个有效值" if max_hr_values else "默认公式 208-age×0.7（无有效历史值）"
+    max_hr_values = [v for v in metadata.get("max_hr_values", []) if v != -1]
+    max_hr, max_hr_source = resolve_gate_max_hr(max_hr_values, age)
     hr_gate = (max_hr - rest_hr) * 0.7 + rest_hr
     parts = [
         f"userInfo(age={age:g}, restHR={rest_hr:g})",
         f"MaxHR={max_hr:.1f}（{max_hr_source}）",
         f"门槛=HR>{hr_gate:.1f}bpm 且 SPEED>6kph，时间>720s",
     ]
+    if max_hr_values:
+        history_text = ", ".join(f"{value:g}" for value in max_hr_values)
+        parts.insert(1, f"EHisPd[maxHr]历史=[{history_text}]（最新在右）")
     if metadata.get("value_count") is not None:
         score = metadata.get("workout_score")
         score_text = f", 本次评分={score:g}" if score is not None else ""
