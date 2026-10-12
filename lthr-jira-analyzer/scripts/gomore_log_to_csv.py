@@ -101,6 +101,18 @@ def _filename_date(input_name: str):
     return m.group(1) if m else None
 
 
+def _format_log_datetime(content: str, pos: int, input_name: str, fallback_ts: int) -> str:
+    clock = _log_clock_at(content, pos)
+    if not clock:
+        return ''
+    date = _filename_date(input_name)
+    year = int(date[:4]) if date else time.gmtime(fallback_ts).tm_year
+    try:
+        return datetime(year, *clock).strftime('%Y-%m-%d %H:%M:%S')
+    except ValueError:
+        return ''
+
+
 
 def extract_fields_around(text: str, pos: int) -> Tuple[int,int,int,float]:
     """从给定位置前后文本提取字段。返回 (utc, tz, hr, speed)。
@@ -293,6 +305,22 @@ def extract_userinfo_from_old_log(content: str) -> str:
         vals += [-1.0] * (7 - len(vals))
     vals = vals[:7]
     return ','.join(['{:.1f}'.format(v) for v in vals])
+
+
+def extract_userinfo_in_range(content: str, start_pos: int = 0, end_pos: int = None) -> str:
+    """Return the latest user profile found in a single parsed activity range."""
+    start_pos = max(0, start_pos)
+    previous_disables = list(re.finditer(r"_disableGomoreAlgo|disable.*Gomore", content[:start_pos], re.IGNORECASE))
+    if previous_disables:
+        start_pos = previous_disables[-1].start()
+    window = content[start_pos:end_pos]
+    matches = list(RE_OLD_GOMORECFG.finditer(window))
+    if matches:
+        return extract_userinfo_from_old_log(matches[-1].group(0))
+    c_matches = list(RE_ALG_GM_C.finditer(window))
+    if c_matches:
+        return extract_userinfo_from_old_log(c_matches[-1].group(0))
+    return ''
 
 
 # 算法输出解析正则
@@ -774,6 +802,7 @@ JSON 输出（--json）示例：
 
     # 试着从旧日志或 ALG_GM c 字段解析 userInfo（优先于后续输出分支）
     parsed_userinfo = extract_userinfo_from_old_log(content)
+    userinfo_found = bool(parsed_userinfo)
     if parsed_userinfo:
         userinfo_arg = parsed_userinfo
         if debug:
@@ -824,6 +853,10 @@ JSON 输出（--json）示例：
             if debug:
                 print(f"[DEBUG] Segment #{idx}: start={start_pos} end={end_pos} rtc={rtc_anchor} tz={tz_anchor} time_anchor={time_anchor_pos} rows_in_seg={len(seg)} algs_in_seg={len(algs_in_seg)}", flush=True)
             total_covered += len(seg)
+            sample_userinfo = extract_userinfo_in_range(content, start_pos, end_pos)
+            sample_userinfo_found = bool(sample_userinfo)
+            if not sample_userinfo:
+                sample_userinfo = userinfo_arg
 
             # 关键修正：每个分段独立校正时间，避免第二段起点受第一段影响
             normalize_segment_timestamps(
@@ -841,7 +874,7 @@ JSON 输出（--json）示例：
 
             tuples = [(r['utc'], r['tz'], r['hr'], r['speed']) for r in seg]
             try:
-                write_csv(tuples, outpath, sport_type=sport_type_arg, userinfo=userinfo_arg)
+                write_csv(tuples, outpath, sport_type=sport_type_arg, userinfo=sample_userinfo)
                 any_written = True
             except Exception as e:
                 print(f'Failed to write CSV to {outpath}: {e}', file=sys.stderr, flush=True)
@@ -855,17 +888,19 @@ JSON 输出（--json）示例：
                 alg_entry = {'ltSpeed': lt, 'lh': ar.get('lh'), 'mh': ar.get('mh'), 'guideResult': ar.get('guideResult'), 'pace': convert_speed_to_pace_str(lt) if lt is not None else None}
 
             try:
-                userinfo_list = [float(x) for x in userinfo_arg.split(',')]
+                userinfo_list = [float(x) for x in sample_userinfo.split(',')]
             except Exception:
                 userinfo_list = userinfo_arg
 
             res_obj = {
                 'index': idx,
                 'userInfo': userinfo_list,
+                'userInfoFound': sample_userinfo_found,
                 'alg_gm': alg_entry,
                 'csv': outpath,
                 'rows': len(tuples),
                 'start_ts': first_utc,
+                'start_log_time': _format_log_datetime(content, seg[0]['pos'], input_name, first_utc),
                 'start_pos': start_pos,
                 'end_pos': end_pos
             }
@@ -936,6 +971,7 @@ JSON 输出（--json）示例：
 
     # 优先使用日志中旧格式的 _gomoreSdkConfig 提供的 userInfo（若存在）
     parsed_userinfo = extract_userinfo_from_old_log(content)
+    userinfo_found = bool(parsed_userinfo)
     if parsed_userinfo:
         userinfo_arg = parsed_userinfo
         if debug:
@@ -1002,13 +1038,17 @@ JSON 输出（--json）示例：
             if debug:
                 print(f"[DEBUG] segment #{idx} has {len(seg)} rows; first pos={seg[0]['pos']}, first_utc={seg[0]['utc']}", flush=True)
             segments_covered += len(seg)
+            sample_userinfo = extract_userinfo_in_range(content, seg[0]['pos'], seg[-1]['pos'] + 1)
+            sample_userinfo_found = bool(sample_userinfo)
+            if not sample_userinfo:
+                sample_userinfo = userinfo_arg
             normalize_segment_timestamps(seg)
             first_utc = seg[0]['utc']
             outpath, _resolved_name_ts = allocate_output_csv_path(
                 out_dir, base_template, first_utc, used_output_paths, seg[0]['tz'])
             tuples = [(r['utc'], r['tz'], r['hr'], r['speed']) for r in seg]
             try:
-                write_csv(tuples, outpath, sport_type=sport_type_arg, userinfo=userinfo_arg)
+                write_csv(tuples, outpath, sport_type=sport_type_arg, userinfo=sample_userinfo)
                 any_written = True
             except Exception as e:
                 print(f'Failed to write CSV to {outpath}: {e}', file=sys.stderr, flush=True)
@@ -1028,17 +1068,19 @@ JSON 输出（--json）示例：
 
             # parse userinfo into list
             try:
-                userinfo_list = [float(x) for x in userinfo_arg.split(',')]
+                userinfo_list = [float(x) for x in sample_userinfo.split(',')]
             except Exception:
                 userinfo_list = userinfo_arg
 
             res_obj = {
                 'index': idx,
                 'userInfo': userinfo_list,
+                'userInfoFound': sample_userinfo_found,
                 'alg_gm': alg_entry,
                 'csv': outpath,
                 'rows': len(tuples),
-                'start_ts': first_utc
+                'start_ts': first_utc,
+                'start_log_time': _format_log_datetime(content, seg[0]['pos'], input_name, first_utc)
             }
             results_output.append(res_obj)
 
@@ -1092,15 +1134,19 @@ JSON 输出（--json）示例：
     # Resolve absolute path and write
     outfile = os.path.abspath(outfile)
     tuples = [(r['utc'], r['tz'], r['hr'], r['speed']) for r in rows]
+    single_userinfo = extract_userinfo_in_range(content, 0, len(content))
+    single_userinfo_found = bool(single_userinfo)
+    if not single_userinfo:
+        single_userinfo = userinfo_arg
     try:
-        write_csv(tuples, outfile, sport_type=sport_type_arg, userinfo=userinfo_arg)
+        write_csv(tuples, outfile, sport_type=sport_type_arg, userinfo=single_userinfo)
     except Exception as e:
         print(f'Failed to write CSV to {outfile}: {e}', file=sys.stderr, flush=True)
         sys.exit(2)
 
     # prepare single-result object
     try:
-        userinfo_list = [float(x) for x in userinfo_arg.split(',')]
+        userinfo_list = [float(x) for x in single_userinfo.split(',')]
     except Exception:
         userinfo_list = userinfo_arg
 
@@ -1113,10 +1159,12 @@ JSON 输出（--json）示例：
     single_res = {
         'index': 1,
         'userInfo': userinfo_list,
+        'userInfoFound': single_userinfo_found,
         'alg_gm': alg_list,
         'csv': outfile,
         'rows': len(tuples),
-        'start_ts': rows[0]['utc'] if rows else None
+        'start_ts': rows[0]['utc'] if rows else None,
+        'start_log_time': _format_log_datetime(content, rows[0]['pos'], input_name, rows[0]['utc']) if rows else ''
     }
 
     if json_out:

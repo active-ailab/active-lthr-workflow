@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from zipfile import ZipFile, is_zipfile
 
@@ -217,22 +218,29 @@ def resolve_model_signature(model_name="", reasoning_effort=""):
 
 def build_comment(issue_meta, source_txt, parse_json, signature, root_work_dir=None):
     results = parse_json.get("results", [])
-    issue_key = issue_meta["key"]
-    issue_link = issue_meta["link"]
-
-    lines = ["【乳酸阈值日志分析结果】"]
-    if signature:
-        lines.append(signature)
-    issue_text = f"[{issue_key}|{issue_link}]" if issue_link else issue_key
-    title_text = f" | 标题: {issue_meta['title']}" if issue_meta.get("title") else ""
-    lines.append(f"* Issue: {issue_text}{title_text} | Source Log: {source_txt.name} | Sample CSV Count: {len(results)}")
+    lines = ["【乳酸阈值分析】"]
 
     if not results:
-        lines.append("* 结论: 未解析到可导出的样本数据")
+        lines.append("未解析到可导出的运动数据。")
         return "\n".join(lines)
 
-    lines.append("* 关键结果:")
+    file_metadata = extract_lthr_log_metadata(source_txt)
     for i, r in enumerate(results, 1):
+        metadata = extract_lthr_log_metadata(source_txt, r)
+        metadata["sdk_version"] = metadata.get("sdk_version") or file_metadata.get("sdk_version")
+        activity_time = format_activity_time(r)
+        lines.append("")
+        lines.append(f"运动{i}（{activity_time}）")
+
+        if r.get("userInfoFound") is False or not has_any_user_info(r.get("userInfo")):
+            lines.append("未检索到用户信息数据，无法分析")
+            continue
+
+        lines.append(f"用户信息：{format_user_info(r.get('userInfo'))}")
+        csv_name = Path(r.get("csv", "")).name
+        if csv_name:
+            lines.append(f"CSV：{csv_name}")
+
         alg_raw = r.get("alg_gm")
         if isinstance(alg_raw, list):
             alg = alg_raw[0] if alg_raw else {}
@@ -240,49 +248,180 @@ def build_comment(issue_meta, source_txt, parse_json, signature, root_work_dir=N
             alg = alg_raw
         else:
             alg = {}
-        lt_speed = format_lt_speed(alg.get("ltSpeed"))
-        pace = alg.get("pace") or "-"
-        lh = alg.get("lh") if alg.get("lh") is not None else "-"
-        mh = alg.get("mh") if alg.get("mh") is not None else "-"
-        rows = r.get("rows", "-")
-        user_info = r.get("userInfo", "-")
-        csv_name = Path(r.get("csv", "")).name
+        lt_speed_value = alg.get("ltSpeed")
+        lh_value = alg.get("lh")
+        mh_value = alg.get("mh")
+        lt_speed = float(lt_speed_value) if lt_speed_value is not None else -1
+        lh = lh_value if lh_value is not None and float(lh_value) > 0 else "-"
+        mh = mh_value if mh_value is not None and float(mh_value) > 0 else "-"
         guide_result = alg.get("guideResult") if alg.get("guideResult") is not None else "-"
-        lines.append(f"  - Result #{i}: {csv_name}, rows={rows}, ltSpeed={lt_speed} ({pace}), lh={lh}, mh={mh}, guideResult={guide_result}, userInfo={user_info}")
+        sdk_version = metadata.get("sdk_version") or "-"
+        lines.append(f"GoMore 出值（SDK 版本：{sdk_version}）")
+        if lt_speed > 0 or lh != "-" or mh != "-":
+            pace = alg.get("pace") or format_speed_as_pace(lt_speed)
+            lines.append(f"LT HR：{lh} bpm｜LT PACE：{pace if lt_speed > 0 else '-'}｜MAX HR：{mh} bpm｜guideResult：{guide_result}")
+        else:
+            lines.append(f"结果：未出值｜guideResult：{guide_result}")
 
-    # Append anomaly analysis (Feature 1)
-    if root_work_dir:
-        anomaly_lines = build_anomaly_analysis(results, root_work_dir)
-        if anomaly_lines:
-            lines.append("* 辅助检查: " + "；".join(line.strip().lstrip("*").strip() for line in anomaly_lines))
+        history_hr = metadata.get("start_fit_lt_hr")
+        history_pace = metadata.get("start_fit_lt_pace")
+        if history_hr is not None or history_pace is not None:
+            history_pace_text = format_speed_as_pace(history_pace) if history_pace is not None else "-"
+            lines.append(f"历史乳酸阈：LT HR {history_hr if history_hr is not None else '-'} bpm｜LT PACE {history_pace_text}")
 
-    gate_lines = build_gate_analysis(source_txt, results)
-    if gate_lines:
-        lines.extend(gate_lines)
+        evidence = []
+        for label, key in (("有效点数", "value_count"), ("输出 Vo2Max", "output_vo2max"), ("最终 Vo2Max", "final_vo2max")):
+            value = metadata.get(key)
+            if value is not None:
+                evidence.append(f"{label}：{format_number(value)}")
+        if evidence:
+            lines.append("输出依据：" + "｜".join(evidence))
 
-    lines.append("* 说明: 样本 CSV 已作为附件上传，可直接用于复现与对比")
+        estimate_lines = build_compact_estimate(r, metadata)
+        lines.extend(estimate_lines)
+
+        # Retain only actionable abnormal findings; omit the old verbose breakdown.
+        if root_work_dir:
+            anomalies = build_anomaly_analysis([r], root_work_dir)
+            if anomalies:
+                lines.extend(anomalies)
+
     return "\n".join(lines)
 
 
-def extract_lthr_log_metadata(log_path):
+def format_number(value):
+    try:
+        number = float(value)
+        return str(int(number)) if number.is_integer() else f"{number:g}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def format_activity_time(result):
+    timestamp = result.get("start_ts")
+    if timestamp is None:
+        return "时间未知"
+    try:
+        timezone_minutes = 0
+        csv_path = result.get("csv")
+        if csv_path:
+            with open(csv_path, "r", encoding="utf-8", newline="") as csv_file:
+                first_row = next(csv.DictReader(csv_file), None)
+            if first_row and first_row.get("timeZoneOffset"):
+                timezone_minutes = int(float(first_row["timeZoneOffset"]))
+        local_time = datetime.fromtimestamp(float(timestamp) + timezone_minutes * 60, timezone.utc)
+        return local_time.strftime("%Y-%m-%d %H:%M:%S")
+    except (OSError, TypeError, ValueError, OverflowError):
+        return "时间未知"
+
+
+def has_any_user_info(user_info):
+    if not isinstance(user_info, list) or len(user_info) < 6:
+        return False
+    try:
+        return any(float(user_info[index]) > 0 for index in (0, 2, 3, 5))
+    except (TypeError, ValueError):
+        return False
+
+
+def format_user_info(user_info):
+    values = user_info if isinstance(user_info, list) else []
+    fields = []
+    if len(values) > 0 and values[0] > 0:
+        fields.append(f"年龄 {format_number(values[0])}")
+    if len(values) > 1 and values[1] in (0, 1):
+        fields.append(f"性别 {'女' if values[1] == 0 else '男'}")
+    if len(values) > 2 and values[2] > 0:
+        fields.append(f"身高 {format_number(values[2])} cm")
+    if len(values) > 3 and values[3] > 0:
+        fields.append(f"体重 {format_number(values[3])} kg")
+    if len(values) > 5 and values[5] > 0:
+        fields.append(f"静息心率 {format_number(values[5])} bpm")
+    return "｜".join(fields) if fields else "信息不完整"
+
+
+def format_speed_as_pace(speed):
+    try:
+        seconds = round(3600 / float(speed))
+        return f"{seconds // 60}'{seconds % 60:02d}\"/km"
+    except (TypeError, ValueError, ZeroDivisionError):
+        return "-"
+
+
+def build_compact_estimate(result, metadata):
+    user_info = result.get("userInfo") or []
+    try:
+        age = float(user_info[0])
+        rest_hr = float(user_info[5])
+    except (IndexError, TypeError, ValueError):
+        return ["分析估值：无法判断出值条件（用户信息不完整）"]
+
+    max_hr, _ = resolve_gate_max_hr(metadata.get("max_hr_values", []), age)
+    hr_line = (max_hr - rest_hr) * 0.7 + rest_hr
+    stats = compute_gate_stats(result.get("csv"), hr_line)
+    if stats is None:
+        return [f"分析估值：UseMax {max_hr:.1f} bpm｜Hr Line {hr_line:.1f} bpm｜估值点数无法计算"]
+
+    points = stats["both_pass"]
+    status = "符合出值条件" if points > 720 else "不符合出值条件"
+    lines = [f"分析估值：{status}｜UseMax {max_hr:.1f} bpm｜Hr Line {hr_line:.1f} bpm｜估值点数 {points}"]
+    if points <= 720:
+        reasons = []
+        if stats["hr_pass"] <= 720:
+            reasons.append(f"HR 达标点数 {stats['hr_pass']}（需超过 720）")
+        if stats["speed_pass"] <= 720:
+            reasons.append(f"速度达标点数 {stats['speed_pass']}（需超过 720）")
+        if reasons:
+            lines.append("不符合原因：" + "；".join(reasons))
+    if metadata.get("value_count") is None:
+        lines.append("SDK 实际有效点数：无法确认")
+    return lines
+
+
+def extract_lthr_log_metadata(log_path, result=None):
     """Extract gate-related fields with the log's output semantics."""
     try:
-        text = log_path.read_text(encoding="utf-8", errors="replace")
+        full_text = log_path.read_text(encoding="utf-8", errors="replace")
     except Exception:
         return {}
+    text = full_text
+    if result and result.get("start_pos") is not None and result.get("end_pos") is not None:
+        try:
+            start_pos = int(result["start_pos"])
+            end_pos = int(result["end_pos"])
+            previous_disables = list(re.finditer(r"_disableGomoreAlgo|disable.*Gomore", full_text[:start_pos], re.IGNORECASE))
+            metadata_start = previous_disables[-1].start() if previous_disables else 0
+            text = full_text[metadata_start:end_pos]
+        except (TypeError, ValueError):
+            text = full_text
 
     def numbers(value):
         return [float(x) for x in re.findall(r"-?(?:\d+\.\d+|\d+)", value)]
 
     max_hr_values = []
     value_count = None
+    output_vo2max = None
     workout_score = None
     fit_app_score = None
+    vo2max_history = []
+    sdk_version = None
+    start_fit_lt_pace = None
+    start_fit_lt_hr = None
     lt_pace = []
     lt_hr = []
     process_status = []
     for line in text.splitlines():
         lower = line.lower()
+        version_match = re.search(r"ALG_GM\s+SDK Version\s*:\s*([^\r\n]+)", line, re.IGNORECASE)
+        if version_match:
+            sdk_version = version_match.group(1).strip()
+        start_fit_match = re.search(r"\[GoMoRe\]\[startFit\]\[ltPace\]\s*=\s*(-?(?:\d+\.\d+|\d+)).*?\[ltHr\]\s*=\s*(-?(?:\d+\.\d+|\d+))", line, re.IGNORECASE)
+        if start_fit_match:
+            start_fit_lt_pace = float(start_fit_match.group(1))
+            start_fit_lt_hr = float(start_fit_match.group(2))
+        vo2_history_match = re.search(r"\[GoMoRe\]\[HisPd\]\[vo2max\]\s*=\s*([^\r\n]+)", line, re.IGNORECASE)
+        if vo2_history_match:
+            vo2max_history.extend(numbers(vo2_history_match.group(1)))
         # EHisPd[maxHr] contains the recent history, with the newest value
         # on the right. Keep the sequence so build_gate_analysis can apply
         # the rule for the current run: one record means the SDK used the
@@ -294,6 +433,8 @@ def extract_lthr_log_metadata(log_path):
             values = numbers(line.split("=", 1)[-1])
             if values:
                 value_count = values[0]
+            if len(values) > 1:
+                output_vo2max = values[1]
             if len(values) > 1:
                 workout_score = values[1]
         if re.search(r"\[gomore\]\[fitapp\]=", lower):
@@ -317,8 +458,14 @@ def extract_lthr_log_metadata(log_path):
     return {
         "max_hr_values": max_hr_values,
         "value_count": value_count,
+        "output_vo2max": output_vo2max,
         "workout_score": workout_score,
         "fit_app_score": fit_app_score,
+        "final_vo2max": fit_app_score,
+        "vo2max_history": vo2max_history,
+        "sdk_version": sdk_version,
+        "start_fit_lt_pace": start_fit_lt_pace,
+        "start_fit_lt_hr": start_fit_lt_hr,
         "lt_pace": lt_pace[-1] if lt_pace else None,
         "lt_hr": lt_hr[-1] if lt_hr else None,
         "process_status": process_status[-1] if process_status else None,
@@ -532,9 +679,9 @@ def build_anomaly_analysis(results, root_work_dir):
 
         findings = []
         # 1. lthr vs maxHR
-        if lt_speed is not None and max_hr is not None:
+        if lt_speed is not None and float(lt_speed) > 0 and max_hr is not None:
             threshold_hr = lh if lh is not None else mh
-            if threshold_hr is not None:
+            if threshold_hr is not None and float(threshold_hr) > 0:
                 threshold_val = float(threshold_hr)
                 if threshold_val < max_hr * 0.9:
                     findings.append(
@@ -547,7 +694,7 @@ def build_anomaly_analysis(results, root_work_dir):
                         f"阈心率异常偏高"
                     )
         # 2. mh < maxHR
-        if mh is not None and max_hr is not None:
+        if mh is not None and float(mh) > 0 and max_hr is not None:
             mh_val = float(mh)
             if mh_val < max_hr:
                 findings.append(
@@ -555,7 +702,7 @@ def build_anomaly_analysis(results, root_work_dir):
                     f"有氧上限未覆盖到最大心率"
                 )
         # 3. ltSpeed < avgSpeed
-        if lt_speed is not None and avg_speed is not None:
+        if lt_speed is not None and float(lt_speed) > 0 and avg_speed is not None:
             lt_val = float(lt_speed)
             avg_speed_kmh = avg_speed
             if lt_val < avg_speed_kmh:
