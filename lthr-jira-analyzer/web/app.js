@@ -369,7 +369,7 @@ analyzeButton.addEventListener('click', async () => {
       }, 0);
       return;
     }
-    const worker = new Worker('./parser-worker.js');
+    const worker = new Worker('./lthr-jira-analyzer/web/parser-worker.js');
     worker.onmessage = (event) => {
       worker.terminate();
       finishAnalysis(event.data);
