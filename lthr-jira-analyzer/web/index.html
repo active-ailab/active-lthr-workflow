@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f5f7f8" />
+    <title>LTHR 样本分析</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <main class="main-content">
+        <div class="page-wrap">
+          <section class="intro">
+            <div class="eyebrow"><span class="eyebrow-line"></span>GOMORE · SAMPLE WORKFLOW</div>
+            <div class="intro-row">
+              <div>
+                <h1>乳酸阈样本分析</h1>
+                <p class="intro-copy">上传运动日志和 FIT 文件，生成可追溯的样本分析结果。</p>
+              </div>
+              <div class="privacy-note"><span class="lock-icon">▣</span><span>文件暂存在当前页面<br /><b>尚未发送到服务器</b></span></div>
+            </div>
+          </section>
+
+          <section class="upload-panel">
+            <div class="panel-heading">
+              <div><h2>添加分析文件</h2><p>可添加多份日志和 FIT，系统会按运动开始时间匹配样本。</p></div>
+              <span class="required-label"><i></i>必需文件</span>
+            </div>
+
+            <div class="upload-grid">
+              <article class="upload-card required-card">
+                <div class="card-top"><div class="file-icon log-icon"><span>TXT</span></div><span class="file-state">必需</span></div>
+                <h3>运动日志 <span class="asterisk">*</span></h3>
+                <p>包含 GoMore 算法处理过程与结果</p>
+                <div class="drop-area" data-upload="log" role="button" tabindex="0" aria-label="选择或拖放日志文件">
+                  <input class="file-input" type="file" accept=".log,.txt,text/plain" multiple hidden />
+                  <span class="upload-glyph">↑</span><span>拖放日志文件到这里</span><b>或浏览文件</b>
+                </div>
+                <div class="selected-files" data-file-list="log" aria-live="polite"></div>
+                <div class="format-hint">支持 .log、.txt</div>
+              </article>
+
+              <article class="upload-card">
+                <div class="card-top"><div class="file-icon fit-icon"><span>FIT</span></div><span class="file-state optional">可选</span></div>
+                <h3>运动数据</h3>
+                <p>用于辅助核对心率、速度和运动时长</p>
+                <div class="drop-area" data-upload="fit" role="button" tabindex="0" aria-label="选择或拖放 FIT 文件">
+                  <input class="file-input" type="file" accept=".fit" multiple hidden />
+                  <span class="upload-glyph">↑</span><span>拖放 FIT 文件到这里</span><b>或浏览文件</b>
+                </div>
+                <div class="selected-files" data-file-list="fit" aria-live="polite"></div>
+                <div class="format-hint">支持 .fit</div>
+              </article>
+
+            </div>
+
+            <div class="panel-footer">
+              <div class="upload-tip"><span class="tip-icon">i</span><span class="upload-message" role="status">可选择多份文件；分析在当前浏览器内完成，不会发送到服务器。</span></div>
+              <button class="primary-button" id="analyze-button" disabled>开始分析 <span>→</span></button>
+            </div>
+          </section>
+
+          <section class="analysis-results" id="analysis-results" hidden aria-live="polite"></section>
+
+          <section class="result-preview">
+            <div class="preview-heading"><div class="preview-symbol">✳</div><div><h2>分析完成后，你将看到</h2><p>结果会清晰展示在这里，确认后再收录到样本库。</p></div></div>
+            <div class="preview-items">
+              <div class="preview-item"><span class="preview-check">✓</span><span>CSV 样本文件</span></div>
+              <div class="preview-item"><span class="preview-check">✓</span><span>算法输出摘要</span></div>
+              <div class="preview-item"><span class="preview-check">✓</span><span>数据质量与条件核对</span></div>
+              <div class="preview-item"><span class="preview-check">✓</span><span>飞书云盘样本收录</span></div>
+            </div>
+          </section>
+
+          <footer class="page-footer"><span>LTHR SAMPLE ANALYZER</span><span>Owner: cs-dongqi@zepp.com&nbsp; / &nbsp;Organization: Active.Bu</span></footer>
+        </div>
+      </main>
+    </div>
+    <script src="./parser-worker.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
