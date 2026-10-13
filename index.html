@@ -19,8 +19,20 @@
                 <p class="intro-copy">上传运动日志和 FIT 文件，生成可追溯的样本分析结果。</p>
                 <p class="maintainer-info">维护人：cs-dongqi@zepp.com&nbsp; / &nbsp;部门：Active.Bu</p>
               </div>
-              <div class="privacy-note"><span class="lock-icon">▣</span><span>文件暂存在当前页面<br /><b>尚未发送到服务器</b></span></div>
             </div>
+          </section>
+
+          <section class="jira-lookup-card" aria-labelledby="jira-lookup-title">
+            <div class="jira-lookup-copy">
+              <h2 id="jira-lookup-title">从 Jira 添加附件</h2>
+              <p>输入 Jira 单号，自动查找并添加日志与 FIT 文件。</p>
+            </div>
+            <form class="jira-lookup-form" id="jira-attachment-form">
+              <label for="jira-issue-key">Jira 单号</label>
+              <input id="jira-issue-key" name="issueKey" type="text" autocomplete="off" required />
+              <button class="jira-lookup-button" id="jira-attachment-button" type="submit">使用Jira附件</button>
+            </form>
+            <p class="jira-lookup-status" id="jira-attachment-status" role="status" aria-live="polite"></p>
           </section>
 
           <section class="upload-panel">
@@ -65,12 +77,11 @@
           <section class="analysis-results" id="analysis-results" hidden aria-live="polite"></section>
 
           <section class="result-preview">
-            <div class="preview-heading"><div class="preview-symbol">✳</div><div><h2>分析完成后，你将看到</h2><p>结果会清晰展示在这里，确认后再收录到样本库。</p></div></div>
+            <div class="preview-heading"><div class="preview-symbol">✳</div><div><h2>分析完成后，你将看到</h2></div></div>
             <div class="preview-items">
               <div class="preview-item"><span class="preview-check">✓</span><span>CSV 样本文件</span></div>
               <div class="preview-item"><span class="preview-check">✓</span><span>算法输出摘要</span></div>
               <div class="preview-item"><span class="preview-check">✓</span><span>数据质量与条件核对</span></div>
-              <div class="preview-item"><span class="preview-check">✓</span><span>飞书云盘样本收录</span></div>
             </div>
           </section>
 

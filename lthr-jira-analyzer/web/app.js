@@ -4,6 +4,10 @@ const uploadMessage = document.querySelector('.upload-message');
 const analyzeButton = document.querySelector('#analyze-button') || document.querySelector('.primary-button');
 const resultsSection = document.querySelector('#analysis-results');
 const previewSection = document.querySelector('.result-preview');
+const isLocalPage = ['localhost', '127.0.0.1'].includes(location.hostname) && location.port === '8000';
+const jiraServiceBase = isLocalPage
+  ? 'http://127.0.0.1:8080/api/v1'
+  : 'https://www.active-ai.cloud/api/v1';
 
 function clearAnalysisResults() {
   resultsSection.hidden = true;
@@ -80,6 +84,57 @@ function addFiles(type, files) {
     uploadMessage.textContent = `已选择 ${selectedFiles.log.length} 份日志和 ${selectedFiles.fit.length} 份 FIT 文件。`;
   }
 }
+
+const jiraAttachmentForm = document.querySelector('#jira-attachment-form');
+const jiraIssueInput = document.querySelector('#jira-issue-key');
+const jiraAttachmentButton = document.querySelector('#jira-attachment-button');
+const jiraAttachmentStatus = document.querySelector('#jira-attachment-status');
+
+jiraAttachmentForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const issueKey = jiraIssueInput.value.trim().toUpperCase();
+  if (!/^[A-Z][A-Z0-9_]*-\d+$/.test(issueKey)) {
+    jiraAttachmentStatus.textContent = '请输入正确的 Jira 单号。';
+    return;
+  }
+
+  jiraAttachmentButton.disabled = true;
+  jiraAttachmentStatus.textContent = `正在查找 ${issueKey} 的附件…`;
+  try {
+    const response = await fetch(`${jiraServiceBase}/issues/${encodeURIComponent(issueKey)}/attachments`, {
+      method: 'POST',
+      credentials: isLocalPage ? 'same-origin' : 'include',
+    });
+    const manifest = await response.json();
+    if (!response.ok) throw new Error(manifest.message || `请求失败（${response.status}）`);
+
+    const files = await Promise.all((manifest.files || []).map(async (entry) => {
+      const fileResponse = await fetch(`${jiraServiceBase}/sessions/${encodeURIComponent(manifest.sessionId)}/files/${encodeURIComponent(entry.fileId)}`, {
+        credentials: isLocalPage ? 'same-origin' : 'include',
+      });
+      if (!fileResponse.ok) throw new Error(`读取附件失败：${entry.name}`);
+      const blob = await fileResponse.blob();
+      return { type: entry.type, file: new File([blob], entry.name, { type: blob.type || 'application/octet-stream' }) };
+    }));
+
+    const logs = files.filter((entry) => entry.type === 'log').map((entry) => entry.file);
+    const fits = files.filter((entry) => entry.type === 'fit').map((entry) => entry.file);
+    const previousLogCount = selectedFiles.log.length;
+    const previousFitCount = selectedFiles.fit.length;
+    addFiles('log', logs);
+    addFiles('fit', fits);
+    const summary = `从 ${issueKey} 找到 ${logs.length} 份日志和 ${fits.length} 份 FIT 文件，新增 ${selectedFiles.log.length - previousLogCount} 份日志和 ${selectedFiles.fit.length - previousFitCount} 份 FIT。`;
+    jiraAttachmentStatus.textContent = summary;
+    uploadMessage.textContent = summary;
+  } catch (error) {
+    const message = error instanceof TypeError
+      ? `无法连接 Jira 附件服务（${jiraServiceBase}），请确认服务已启动并允许当前网页跨域访问。`
+      : error.message;
+    jiraAttachmentStatus.textContent = message;
+  } finally {
+    jiraAttachmentButton.disabled = false;
+  }
+});
 
 document.querySelectorAll('[data-upload]').forEach((area) => {
   const type = area.dataset.upload;
