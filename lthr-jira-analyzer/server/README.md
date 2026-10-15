@@ -3,78 +3,144 @@ Organization: Active.Bu
 
 # LTHR Jira Attachment Service
 
-This small internal service retrieves Jira attachments for the browser-based LTHR analyzer. It does not parse logs or generate CSV files.
+The service accepts a Jira server address, username, and password from the browser, signs in through Jira's cookie-based session endpoint, and uses that session to retrieve issue attachments. ZIP files are expanded recursively; matching logs and FIT files are then made available directly to the browser analyzer. Log parsing and CSV generation remain in the browser.
 
-## Behavior
+The Jira password is sent to this service only for login and is not saved. The service keeps the Jira session cookie in memory for up to eight hours. The browser keeps an opaque service session token in `sessionStorage`. The “记住登录信息” checkbox saves only the Jira address and username in browser `localStorage`. Restarting the service clears active sessions.
 
-- `GET /health` reports whether the process is running.
-- `POST /api/v1/issues/{issueKey}/attachments` downloads every Jira attachment for the issue.
-- ZIP archives are expanded recursively before candidate files are selected.
-- Matching log files are deduplicated by SHA-256 content, so an attached log and an identical copy extracted from a ZIP are only returned once. The original attachment is kept ahead of extracted copies.
-- The service returns a JSON manifest for all files named `MILI*.log`, `MILI*.txt`, `ios*.log`, `ios*.txt`, and all `.fit` files.
-- Each matched file has a temporary `downloadUrl` that the browser can fetch as data and add directly to the analyzer's file lists. This is an in-page fetch; it does not prompt the user to save a file.
-- If no Jira attachments or no matching logs exist, the service returns JSON and marks feedback retrieval as `not_implemented`.
-- Matched files are staged for 15 minutes so the browser can fetch them individually. Expired files are removed when the service next handles a session-file request or a new Jira search.
+This login method works when the Jira instance permits username/password cookie authentication. Jira accounts that require SSO or two-step verification may need a different authentication flow. Jira and its administrator control which methods are available.
 
-Matching is case-insensitive. A FIT file is included when found, but a FIT file alone does not count as a matching log.
+## Run locally
 
-## Configuration
-
-Python 3.8+ and the standard `jira` CLI (`ankitpokhrel/jira-cli`) must be installed and available in `PATH`. The service checks for `jira` at startup and exits with an error if it is missing. It calls `jira issue view {issueKey} --raw` to read the issue and its attachment metadata. This CLI version has no attachment-download subcommand, so the service downloads each returned content URL using the same host and credentials from the Jira CLI config plus the local `.netrc` file. Jira CLI credentials remain local; no duplicate Jira token or service API key environment variables are required.
-
-The current Jira CLI configuration file defaults to `~/.config/.jira/.config.yml`. Attachment downloads reuse credentials from `~/.netrc` with restrictive permissions (`chmod 600 ~/.netrc`), matching Jira CLI's local authentication setup. `JIRA_API_TOKEN` is also accepted if it is already set in the environment.
-
-Optional environment variables:
-
-- `JIRA_CLI`: explicit Jira CLI executable path; otherwise `jira` is searched in `PATH`.
-- `JIRA_CONFIG_FILE`: Jira CLI config path; defaults to `~/.config/.jira/.config.yml`.
-- `HOST`: defaults to `127.0.0.1`.
-- `PORT`: defaults to `8080`.
-- `ALLOWED_ORIGIN`: comma-separated exact browser origins to allow for CORS; defaults to `https://active-ailab.github.io`, `http://127.0.0.1:8000`, and `http://localhost:8000`.
-
-Start from this directory with:
-
-```bash
-python3 app.py
-```
-
-The service is bound to localhost by default. Keep that terminal open while using it. Check it from another terminal with:
-
-```bash
-curl http://127.0.0.1:8080/health
-```
-
-The expected response is `{"status": "ok"}`.
-
-### Local page test
-
-Use two terminals. Start the Jira attachment service in the first:
+Python 3.8+ and the Python standard library are sufficient. Jira CLI and local Jira credentials are not used.
 
 ```bash
 cd lthr-jira-analyzer/server
 python3 app.py
 ```
 
-Start a static page server from the repository root in the second:
+The service listens on `127.0.0.1:8080` by default and can be started without Jira credentials or additional secret variables. Check startup with:
+
+```bash
+curl http://127.0.0.1:8080/health
+```
+
+For a local browser trial, serve the repository root in a second terminal:
 
 ```bash
 python3 -m http.server 8000
 ```
 
-Open `http://127.0.0.1:8000/` in the browser. Do not open `index.html` as a `file://` URL; browsers assign those pages an opaque `null` origin, which cannot use the service's local CORS allowlist. The browser page calls the attachment service at `http://127.0.0.1:8080`.
+Open `http://127.0.0.1:8000/`. The page sends login and attachment requests to `http://127.0.0.1:8080/api/v1`. Do not open the page with `file://`.
 
-The website will call this localhost service directly. Keep it bound to localhost; the service does not expose an API key because it is intended for local use.
+The deployed GitHub Pages page sends requests to `https://www.active-ai.cloud/lthr-jira-api/api/v1`. Caddy must strip the `/lthr-jira-api` prefix and proxy the remaining path to this service. This separate route avoids the existing `/api/*` route to the Node service. The service must allow the GitHub Pages origin through `ALLOWED_ORIGIN`.
 
-## API
+## Deploy on the server
 
-```http
-POST /api/v1/issues/ITS-58513/attachments
+This setup assumes the public hostname is `www.active-ai.cloud`, Caddy is the HTTPS reverse proxy, and the Python service runs on the same host at `127.0.0.1:8080`. Keep the Python listener bound to loopback; expose it through Caddy rather than opening port 8080 to the internet.
+
+### 1. Install the service files
+
+Copy the latest `lthr-jira-analyzer/server/app.py` to `/opt/lthr-jira-analyzer/server/app.py` on the server. Python 3.8+ is sufficient; there are no third-party Python packages to install.
+
+Create a dedicated service account if one does not already exist, then create the code and temporary-file directories:
+
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin lthr-jira
+sudo install -d -o root -g root -m 755 /opt/lthr-jira-analyzer/server
+sudo install -d -o lthr-jira -g lthr-jira -m 700 /var/lib/lthr-jira
 ```
 
-On success, the response is JSON. It lists matched files with `fileId`, `type` (`log` or `fit`), original `name`, `size`, and `downloadUrl`. The browser fetches each URL and wraps the response body in a `File` object for the analyzer; no user download is needed. The individual-file endpoint is `GET /api/v1/sessions/{sessionId}/files/{fileId}`.
+Install the file from your uploaded/released checkout (adjust the source path to where you copied the repository):
 
-The service retains matched files for 15 minutes. The website should fetch them immediately after receiving the manifest, add them to the existing log/FIT lists, and leave analysis initiation to the user's **Start analysis** action.
+```bash
+sudo install -o root -g root -m 755 /path/to/active-lthr-workflow/lthr-jira-analyzer/server/app.py /opt/lthr-jira-analyzer/server/app.py
+```
 
-No-attachment and no-log responses use JSON with HTTP 404. Both include `feedbackFallback: "not_implemented"` for the future fallback path.
+If the `lthr-jira` account already exists, skip `useradd`. When deploying a later version, repeat the `install app.py` command and restart the service.
 
-The service enforces limits of 128 MB per downloaded attachment, 512 MB total download size, 512 MB expanded ZIP data, 5 nested ZIP levels, and 5000 archive entries. Unsafe archive paths and symlink entries are skipped.
+### 2. Configure systemd
+
+Create `/etc/systemd/system/lthr-jira-attachment.service`:
+
+```ini
+[Unit]
+Description=LTHR Jira Attachment Service
+After=network.target
+
+[Service]
+Type=simple
+User=lthr-jira
+Group=lthr-jira
+WorkingDirectory=/opt/lthr-jira-analyzer/server
+ExecStart=/usr/bin/python3 /opt/lthr-jira-analyzer/server/app.py
+Restart=on-failure
+RestartSec=3
+Environment=HOST=127.0.0.1
+Environment=PORT=8080
+Environment=ALLOWED_ORIGIN=https://active-ailab.github.io
+Environment=JIRA_ALLOWED_HOSTS=jira.huami.com
+Environment=SESSION_DIR=/var/lib/lthr-jira
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Load and start it:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now lthr-jira-attachment
+sudo systemctl status lthr-jira-attachment --no-pager
+curl http://127.0.0.1:8080/health
+```
+
+The health request should return HTTP 200 and `{"status": "ok", ...}`. To inspect service logs, use `sudo journalctl -u lthr-jira-attachment -n 100 --no-pager`.
+
+### 3. Add a dedicated Caddy route
+
+In **both** the `:80` and `:443` site blocks in `/etc/caddy/Caddyfile`, add this handler alongside the existing handlers:
+
+```caddy
+handle_path /lthr-jira-api/* {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+Keep the existing `handle /api/*` route to `127.0.0.1:3001`. The new prefix is separate, and `handle_path` removes `/lthr-jira-api` before forwarding. For example, the public request `/lthr-jira-api/api/v1/auth/login` reaches the Python service as `/api/v1/auth/login`; `/lthr-jira-api/health` reaches it as `/health`.
+
+Validate and reload Caddy:
+
+```bash
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+curl -i https://www.active-ai.cloud/lthr-jira-api/health
+```
+
+The public health request should return HTTP 200. If it returns a Node response or 404, inspect the placement of the new handler in both site blocks and ensure the Caddy configuration was reloaded.
+
+### 4. Publish the frontend change
+
+The repository's production frontend is configured to call `https://www.active-ai.cloud/lthr-jira-api/api/v1`; local testing still calls `http://127.0.0.1:8080/api/v1`. Commit and push the updated web assets to the GitHub Pages branch/source and wait for Pages to publish. Then open `https://active-ailab.github.io/`, sign in to Jira, and try an issue with attachments.
+
+If the browser reports a CORS error, confirm `ALLOWED_ORIGIN` exactly matches the page origin (`https://active-ailab.github.io`), then restart `lthr-jira-attachment`. CORS allows the browser origin; Jira permissions still come from the account that signed in. The server stores Jira session cookies in process memory, so a service restart requires users to sign in again.
+
+## Endpoints
+
+- `GET /health` reports process status and authentication mode.
+- `POST /api/v1/auth/login` accepts `{ "baseUrl", "username", "password" }`, authenticates against Jira, and returns an opaque service session token.
+- `GET /api/v1/auth/status` checks a session using `Authorization: Bearer {sessionToken}`.
+- `POST /api/v1/auth/logout` removes the service session.
+- `POST /api/v1/issues/{issueKey}/attachments` retrieves and processes issue attachments for the logged-in user.
+- `GET /api/v1/sessions/{sessionId}/files/{fileId}` returns a staged file to the session that owns it.
+
+ZIP files are expanded recursively before selecting logs and FITs. Candidate logs are `MILI*.log`, `MILI*.txt`, `ios*.log`, `ios*.txt`, `Amazfit*.log`, and `Amazfit*.txt`; all `.fit` files are included. Logs with identical SHA-256 content are returned once, with direct Jira attachments preferred over extracted copies. A FIT alone does not count as a matching log. Matched files are staged for 15 minutes.
+
+## Configuration
+
+- `HOST`: bind address; defaults to `127.0.0.1`.
+- `PORT`: listen port; defaults to `8080`.
+- `ALLOWED_ORIGIN`: comma-separated exact browser origins; defaults to the GitHub Pages origin and local test origins.
+- `JIRA_ALLOWED_HOSTS`: comma-separated Jira host allowlist; defaults to `jira.huami.com`. Use hostnames only, without scheme or paths.
+- `SESSION_DIR`: root directory for temporary download staging; defaults to the system temporary directory.
+
+The service enforces limits of 128 MB per attachment, 512 MB total downloaded data, 512 MB expanded ZIP data, five nested ZIP levels, and 5000 archive entries. Unsafe archive paths and symlink entries are skipped.

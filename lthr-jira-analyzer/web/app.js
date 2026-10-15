@@ -7,7 +7,7 @@ const previewSection = document.querySelector('.result-preview');
 const isLocalPage = ['localhost', '127.0.0.1'].includes(location.hostname) && location.port === '8000';
 const jiraServiceBase = isLocalPage
   ? 'http://127.0.0.1:8080/api/v1'
-  : 'https://www.active-ai.cloud/api/v1';
+  : 'https://www.active-ai.cloud/lthr-jira-api/api/v1';
 
 function clearAnalysisResults() {
   resultsSection.hidden = true;
@@ -88,7 +88,121 @@ function addFiles(type, files) {
 const jiraAttachmentForm = document.querySelector('#jira-attachment-form');
 const jiraIssueInput = document.querySelector('#jira-issue-key');
 const jiraAttachmentButton = document.querySelector('#jira-attachment-button');
+const jiraLoginForm = document.querySelector('#jira-login-form');
+const jiraLoginButton = document.querySelector('#jira-login-button');
+const jiraLoginOpenButton = document.querySelector('#jira-login-open-button');
+const jiraLoginDialog = document.querySelector('#jira-login-dialog');
+const jiraLoginCloseButton = document.querySelector('#jira-login-close-button');
+const jiraLoginStatus = document.querySelector('#jira-login-status');
+const jiraServerUrlInput = document.querySelector('#jira-server-url');
+const jiraUsernameInput = document.querySelector('#jira-username');
+const jiraPasswordInput = document.querySelector('#jira-password');
+const jiraRememberLoginInput = document.querySelector('#jira-remember-login');
 const jiraAttachmentStatus = document.querySelector('#jira-attachment-status');
+const jiraSessionStorageKey = 'lthrJiraSessionToken';
+const jiraLoginInfoStorageKey = 'lthrJiraLoginInfo';
+let jiraSessionToken = sessionStorage.getItem(jiraSessionStorageKey) || '';
+
+try {
+  const savedLoginInfo = JSON.parse(localStorage.getItem(jiraLoginInfoStorageKey) || '{}');
+  if (savedLoginInfo.baseUrl) jiraServerUrlInput.value = savedLoginInfo.baseUrl;
+  if (savedLoginInfo.username) jiraUsernameInput.value = savedLoginInfo.username;
+  jiraRememberLoginInput.checked = Boolean(savedLoginInfo.baseUrl || savedLoginInfo.username);
+} catch {
+  localStorage.removeItem(jiraLoginInfoStorageKey);
+}
+
+function updateJiraLoginButton() {
+  jiraLoginOpenButton.textContent = jiraSessionToken ? '退出 Jira' : '登录 Jira';
+  jiraServerUrlInput.required = !jiraSessionToken;
+  jiraUsernameInput.required = !jiraSessionToken;
+  jiraPasswordInput.required = !jiraSessionToken;
+}
+
+jiraLoginOpenButton.addEventListener('click', async () => {
+  if (!jiraSessionToken) {
+    jiraLoginStatus.textContent = '';
+    jiraLoginDialog.showModal();
+    jiraServerUrlInput.focus();
+    return;
+  }
+  try {
+    await fetch(`${jiraServiceBase}/auth/logout`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${jiraSessionToken}` },
+    });
+    jiraAttachmentStatus.textContent = '已退出 Jira。';
+  } catch {
+    jiraAttachmentStatus.textContent = '服务端未确认退出；本页已清除 Jira 登录会话。';
+  } finally {
+    jiraSessionToken = '';
+    sessionStorage.removeItem(jiraSessionStorageKey);
+    updateJiraLoginButton();
+  }
+});
+
+jiraLoginCloseButton.addEventListener('click', () => jiraLoginDialog.close());
+
+async function validateJiraSession() {
+  if (!jiraSessionToken) return;
+  try {
+    const response = await fetch(`${jiraServiceBase}/auth/status`, {
+      headers: { Authorization: `Bearer ${jiraSessionToken}` },
+    });
+    const status = await response.json();
+    if (!response.ok || !status.authenticated) {
+      jiraSessionToken = '';
+      sessionStorage.removeItem(jiraSessionStorageKey);
+    }
+  } catch {
+    jiraAttachmentStatus.textContent = '无法确认 Jira 登录状态；检查服务端连接后可重新登录。';
+  }
+  updateJiraLoginButton();
+}
+
+jiraLoginForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  jiraLoginButton.disabled = true;
+  jiraLoginStatus.textContent = '正在登录 Jira…';
+  try {
+    const response = await fetch(`${jiraServiceBase}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        baseUrl: jiraServerUrlInput.value.trim(),
+        username: jiraUsernameInput.value.trim(),
+        password: jiraPasswordInput.value,
+      }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.message || `登录失败（${response.status}）`);
+
+    jiraSessionToken = result.sessionToken;
+    sessionStorage.setItem(jiraSessionStorageKey, jiraSessionToken);
+    if (jiraRememberLoginInput.checked) {
+      localStorage.setItem(jiraLoginInfoStorageKey, JSON.stringify({
+        baseUrl: jiraServerUrlInput.value.trim(),
+        username: jiraUsernameInput.value.trim(),
+      }));
+    } else {
+      localStorage.removeItem(jiraLoginInfoStorageKey);
+    }
+    jiraPasswordInput.value = '';
+    updateJiraLoginButton();
+    jiraLoginDialog.close();
+    jiraAttachmentStatus.textContent = 'Jira 登录成功，可以输入 Jira 单号查找附件。';
+  } catch (error) {
+    jiraLoginStatus.textContent = error instanceof TypeError
+      ? `无法连接 Jira 附件服务（${jiraServiceBase}）。`
+      : error.message;
+  } finally {
+    jiraPasswordInput.value = '';
+    jiraLoginButton.disabled = false;
+  }
+});
+
+updateJiraLoginButton();
+validateJiraSession();
 
 jiraAttachmentForm.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -97,20 +211,24 @@ jiraAttachmentForm.addEventListener('submit', async (event) => {
     jiraAttachmentStatus.textContent = '请输入正确的 Jira 单号。';
     return;
   }
+  if (!jiraSessionToken) {
+    jiraAttachmentStatus.textContent = '请先登录 Jira，再查找问题附件。';
+    return;
+  }
 
   jiraAttachmentButton.disabled = true;
   jiraAttachmentStatus.textContent = `正在查找 ${issueKey} 的附件…`;
   try {
     const response = await fetch(`${jiraServiceBase}/issues/${encodeURIComponent(issueKey)}/attachments`, {
       method: 'POST',
-      credentials: isLocalPage ? 'same-origin' : 'include',
+      headers: { Authorization: `Bearer ${jiraSessionToken}` },
     });
     const manifest = await response.json();
     if (!response.ok) throw new Error(manifest.message || `请求失败（${response.status}）`);
 
     const files = await Promise.all((manifest.files || []).map(async (entry) => {
       const fileResponse = await fetch(`${jiraServiceBase}/sessions/${encodeURIComponent(manifest.sessionId)}/files/${encodeURIComponent(entry.fileId)}`, {
-        credentials: isLocalPage ? 'same-origin' : 'include',
+        headers: { Authorization: `Bearer ${jiraSessionToken}` },
       });
       if (!fileResponse.ok) throw new Error(`读取附件失败：${entry.name}`);
       const blob = await fileResponse.blob();

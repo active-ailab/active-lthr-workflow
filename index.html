@@ -25,15 +25,37 @@
           <section class="jira-lookup-card" aria-labelledby="jira-lookup-title">
             <div class="jira-lookup-copy">
               <h2 id="jira-lookup-title">从 Jira 添加附件</h2>
-              <p>输入 Jira 单号，自动查找并添加日志与 FIT 文件。</p>
+              <p>登录 Jira 后输入单号，自动查找并添加日志与 FIT 文件。</p>
             </div>
-            <form class="jira-lookup-form" id="jira-attachment-form">
-              <label for="jira-issue-key">Jira 单号</label>
-              <input id="jira-issue-key" name="issueKey" type="text" autocomplete="off" required />
-              <button class="jira-lookup-button" id="jira-attachment-button" type="submit">使用Jira附件</button>
-            </form>
+            <div class="jira-lookup-controls">
+              <form class="jira-lookup-form" id="jira-attachment-form">
+                <label for="jira-issue-key">Jira 单号</label>
+                <input id="jira-issue-key" name="issueKey" type="text" autocomplete="off" required />
+                <button class="jira-lookup-button" id="jira-attachment-button" type="submit">使用Jira附件</button>
+                <button class="jira-login-button" id="jira-login-open-button" type="button">登录 Jira</button>
+              </form>
+            </div>
             <p class="jira-lookup-status" id="jira-attachment-status" role="status" aria-live="polite"></p>
           </section>
+
+          <dialog class="jira-login-dialog" id="jira-login-dialog" aria-labelledby="jira-login-title">
+            <form class="jira-login-form" id="jira-login-form">
+              <div class="jira-dialog-heading">
+                <div><h2 id="jira-login-title">登录 Jira</h2><p>使用你的 Jira 账号登录以读取问题附件。</p></div>
+                <button class="jira-dialog-close" id="jira-login-close-button" type="button" aria-label="关闭登录弹窗">×</button>
+              </div>
+              <label for="jira-server-url">服务器地址</label>
+              <input id="jira-server-url" name="baseUrl" type="url" value="https://jira.huami.com/" autocomplete="url" required />
+              <label for="jira-username">用户名</label>
+              <input id="jira-username" name="username" type="text" autocomplete="username" required />
+              <label for="jira-password">密码</label>
+              <input id="jira-password" name="password" type="password" autocomplete="current-password" required />
+              <label class="jira-remember-label" for="jira-remember-login"><input id="jira-remember-login" type="checkbox" />记住登录信息</label>
+              <span class="jira-remember-note">仅记住服务器地址和用户名，密码不会保存</span>
+              <p class="jira-login-status" id="jira-login-status" role="status" aria-live="polite"></p>
+              <button class="jira-login-submit" id="jira-login-button" type="submit">登录</button>
+            </form>
+          </dialog>
 
           <section class="upload-panel">
             <div class="panel-heading">

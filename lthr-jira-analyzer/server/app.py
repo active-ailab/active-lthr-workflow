@@ -2,15 +2,12 @@
 """Internal Jira attachment proxy for the LTHR browser analyzer."""
 
 import json
-import base64
 import hashlib
-import netrc
 import os
 import re
 import secrets
 import shutil
 import stat
-import subprocess
 import tempfile
 import threading
 import time
@@ -32,7 +29,10 @@ ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]*-[0-9]+$")
 SESSION_TTL_SECONDS = 900
 SESSION_STORE = {}
 SESSION_LOCK = threading.Lock()
-JIRA_COMMAND = None
+JIRA_LOGIN_SESSIONS = {}
+JIRA_LOGIN_LOCK = threading.Lock()
+JIRA_LOGIN_TTL_SECONDS = 8 * 60 * 60
+DEFAULT_JIRA_HOSTS = {"jira.huami.com"}
 
 
 class ServiceError(Exception):
@@ -44,109 +44,164 @@ class ServiceError(Exception):
         self.extra = extra or {}
 
 
-def find_jira_command():
-    configured = os.environ.get("JIRA_CLI", "").strip()
-    candidates = [configured] if configured else []
-    candidates.extend(["jira", "jira.cmd", "jira.exe"])
-    for candidate in candidates:
-        if not candidate:
-            continue
-        found = shutil.which(candidate)
-        if found:
-            return [found]
-        expanded = Path(candidate).expanduser()
-        if expanded.is_file():
-            return [str(expanded)]
-    return None
-
-
-def run_jira_cli(args):
-    if not JIRA_COMMAND:
-        raise ServiceError(503, "JIRA_CLI_NOT_FOUND", "Jira CLI is unavailable; restart the service after installing it")
+def normalize_jira_url(value):
+    base_url = str(value or "").strip().rstrip("/")
+    parsed = urlparse(base_url)
     try:
-        result = subprocess.run(
-            JIRA_COMMAND + args,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=120,
-        )
-    except subprocess.TimeoutExpired:
-        raise ServiceError(504, "JIRA_CLI_TIMEOUT", "Jira CLI timed out while reading the issue")
-    except OSError:
-        raise ServiceError(503, "JIRA_CLI_FAILED", "Could not start Jira CLI")
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        raise ServiceError(502, "JIRA_CLI_REQUEST_FAILED", detail[-1500:] or "Jira CLI request failed")
-    return result.stdout
+        port = parsed.port
+    except ValueError:
+        raise ServiceError(400, "INVALID_JIRA_URL", "Jira address must be a valid HTTPS URL")
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+        or port not in (None, 443)
+    ):
+        raise ServiceError(400, "INVALID_JIRA_URL", "Jira address must be a valid HTTPS URL")
+    allowed_hosts = {
+        host.strip().lower()
+        for host in os.environ.get("JIRA_ALLOWED_HOSTS", "jira.huami.com").split(",")
+        if host.strip()
+    } or DEFAULT_JIRA_HOSTS
+    if parsed.hostname.lower() not in allowed_hosts:
+        raise ServiceError(403, "JIRA_HOST_NOT_ALLOWED", "This Jira server address is not allowed")
+    return base_url
 
 
-def jira_config():
-    config_path = os.environ.get("JIRA_CONFIG_FILE", "~/.config/.jira/.config.yml")
-    path = Path(config_path).expanduser()
+def jira_same_origin(url, base_url):
+    requested = urlparse(url)
+    expected = urlparse(base_url)
+    return (
+        requested.scheme.lower(),
+        (requested.hostname or "").lower(),
+        requested.port or 443,
+    ) == (
+        expected.scheme.lower(),
+        (expected.hostname or "").lower(),
+        expected.port or 443,
+    )
+
+
+def login_to_jira(base_url, username, password):
+    base_url = normalize_jira_url(base_url)
+    if not username or not password:
+        raise ServiceError(400, "JIRA_CREDENTIALS_REQUIRED", "Enter both a Jira username and password")
+    body = json.dumps({"username": username, "password": password}).encode("utf-8")
+    request = Request(
+        base_url + "/rest/auth/1/session",
+        data=body,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        raise ServiceError(502, "JIRA_CONFIG_NOT_FOUND", "Could not read the Jira CLI config file")
-    server_match = re.search(r"(?m)^server:\s*[\"']?([^\s\"']+)", text)
-    auth_match = re.search(r"(?m)^auth_type:\s*[\"']?([^\s\"']+)", text)
-    if not server_match:
-        raise ServiceError(502, "JIRA_CONFIG_INVALID", "Jira CLI config does not define a server")
-    return server_match.group(1).rstrip("/"), (auth_match.group(1).lower() if auth_match else "basic")
+        with build_opener(SameHostRedirectHandler(base_url)).open(request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        if exc.code in (401, 403):
+            login_reason = exc.headers.get("X-Seraph-LoginReason", "").upper()
+            if login_reason == "AUTHENTICATION_DENIED":
+                raise ServiceError(401, "JIRA_LOGIN_DENIED", "Jira denied this login before checking the password. Sign in to Jira in your browser first; a CAPTCHA, SSO policy, or temporary security lock may need attention.")
+            if login_reason == "AUTHENTICATION_FAILED":
+                raise ServiceError(401, "JIRA_LOGIN_FAILED", "Jira rejected the credentials. Check the Jira username and password; some Jira setups require the account username instead of an email address.")
+            raise ServiceError(401, "JIRA_LOGIN_FAILED", "Jira rejected this login. Check the Jira username/password, or confirm whether this account requires SSO or two-step verification.")
+        raise ServiceError(502, "JIRA_LOGIN_FAILED", f"Jira login failed with HTTP {exc.code}")
+    except URLError:
+        raise ServiceError(502, "JIRA_UNAVAILABLE", "Could not connect to the Jira address")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ServiceError(502, "JIRA_LOGIN_BAD_RESPONSE", "Jira returned an invalid login response; SSO login pages are not supported by this form")
+    session = payload.get("session") or {}
+    cookie_name = str(session.get("name", ""))
+    cookie_value = str(session.get("value", ""))
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", cookie_name) or not cookie_value or any(char in cookie_value for char in "\r\n;,"):
+        raise ServiceError(401, "JIRA_LOGIN_FAILED", "Jira did not return a session; verify the account and authentication method")
+    return base_url, cookie_name, cookie_value
 
 
-def jira_auth_header(host, auth_type):
-    token = os.environ.get("JIRA_API_TOKEN", "").strip()
-    if auth_type == "bearer" and token:
-        return "Bearer " + token
-    try:
-        auth = netrc.netrc().authenticators(host)
-    except (OSError, netrc.NetrcParseError):
-        auth = None
-    if auth and auth[0] and auth[2]:
-        raw = f"{auth[0]}:{auth[2]}".encode("utf-8")
-        return "Basic " + base64.b64encode(raw).decode("ascii")
-    if token and auth_type == "basic":
-        login = os.environ.get("JIRA_USERNAME", "").strip()
-        if login:
-            raw = f"{login}:{token}".encode("utf-8")
-            return "Basic " + base64.b64encode(raw).decode("ascii")
-    raise ServiceError(502, "JIRA_CREDENTIALS_NOT_FOUND", "Jira CLI works, but its credentials are not available through the configured .netrc or JIRA_API_TOKEN")
+def create_login_session(jira_session):
+    app_token = secrets.token_urlsafe(48)
+    with JIRA_LOGIN_LOCK:
+        JIRA_LOGIN_SESSIONS[app_token] = {
+            "jiraBaseUrl": jira_session[0],
+            "cookieName": jira_session[1],
+            "cookieValue": jira_session[2],
+            "expiresAt": time.time() + JIRA_LOGIN_TTL_SECONDS,
+        }
+    return app_token
+
+
+def get_login_session(app_token):
+    if not app_token:
+        return None
+    with JIRA_LOGIN_LOCK:
+        session = JIRA_LOGIN_SESSIONS.get(app_token)
+        if not session:
+            return None
+        if session["expiresAt"] <= time.time():
+            JIRA_LOGIN_SESSIONS.pop(app_token, None)
+            return None
+        return session
+
+
+def bearer_session(handler):
+    authorization = handler.headers.get("Authorization", "")
+    if not authorization.startswith("Bearer "):
+        return None, None
+    token = authorization[7:].strip()
+    return token, get_login_session(token)
 
 
 class SameHostRedirectHandler(HTTPRedirectHandler):
-    def __init__(self, expected_host):
-        self.expected_host = expected_host
+    def __init__(self, expected_url):
+        self.expected_url = expected_url
         super().__init__()
 
     def redirect_request(self, request, response, code, message, headers, new_url):
-        if urlparse(new_url).hostname != self.expected_host:
+        if not jira_same_origin(new_url, self.expected_url):
             raise ServiceError(502, "UNSAFE_JIRA_REDIRECT", "Jira redirected the attachment outside the configured Jira host")
         return super().redirect_request(request, response, code, message, headers, new_url)
 
 
-def download_issue_attachments(issue_key, destination):
-    raw = run_jira_cli(["issue", "view", issue_key, "--raw"])
+def jira_api_json(path, jira_session):
+    base_url = jira_session["jiraBaseUrl"]
+    request = Request(
+        base_url + path,
+        headers={"Cookie": jira_session["cookieName"] + "=" + jira_session["cookieValue"], "Accept": "application/json"},
+    )
     try:
-        issue = json.loads(raw)
-    except json.JSONDecodeError:
-        raise ServiceError(502, "JIRA_CLI_BAD_RESPONSE", "Jira CLI returned invalid issue JSON")
-    attachments = (issue.get("fields") or {}).get("attachment") or []
+        with build_opener(SameHostRedirectHandler(base_url)).open(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        if exc.code in (401, 403):
+            raise ServiceError(401, "JIRA_ACCESS_DENIED", "Jira rejected the authorization or the account cannot view this issue")
+        raise ServiceError(502, "JIRA_API_FAILED", f"Jira issue request failed with HTTP {exc.code}")
+    except URLError:
+        raise ServiceError(502, "JIRA_UNAVAILABLE", "Could not connect to Jira")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise ServiceError(502, "JIRA_BAD_RESPONSE", "Jira returned invalid issue JSON")
+
+
+def download_issue_attachments(issue_key, destination, jira_session):
+    raw = jira_api_json(f"/rest/api/2/issue/{quote(issue_key)}?fields=attachment", jira_session)
+    try:
+        attachments = (raw.get("fields") or {}).get("attachment") or []
+    except AttributeError:
+        raise ServiceError(502, "JIRA_BAD_RESPONSE", "Jira response did not contain issue fields")
     if not attachments:
         return 0
-    server, auth_type = jira_config()
-    server_parts = urlparse(server)
-    authorization = jira_auth_header(server_parts.hostname, auth_type)
-    opener = build_opener(SameHostRedirectHandler(server_parts.hostname))
+    server = jira_session["jiraBaseUrl"]
+    opener = build_opener(SameHostRedirectHandler(server))
     total = 0
     for index, attachment in enumerate(attachments, 1):
         content_url = attachment.get("content", "")
-        parts = urlparse(content_url)
-        if parts.scheme != server_parts.scheme or parts.hostname != server_parts.hostname:
+        if not jira_same_origin(content_url, server):
             raise ServiceError(502, "UNSAFE_ATTACHMENT_URL", "Jira returned an attachment URL outside its configured server")
-        request = Request(content_url, headers={"Authorization": authorization, "Accept": "application/octet-stream"})
+        request = Request(content_url, headers={
+            "Cookie": jira_session["cookieName"] + "=" + jira_session["cookieValue"],
+            "Accept": "application/octet-stream",
+        })
         filename = safe_filename(attachment.get("filename", f"attachment_{index}"))
         target_dir = destination / f"attachment_{index:04d}_{attachment.get('id', index)}"
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -165,7 +220,7 @@ def download_issue_attachments(issue_key, destination):
                     output.write(chunk)
         except HTTPError as exc:
             if exc.code in (401, 403):
-                raise ServiceError(502, "JIRA_AUTH_FAILED", "Jira CLI read the issue, but attachment download authentication failed")
+                raise ServiceError(401, "JIRA_ACCESS_DENIED", "Jira rejected the authorization while downloading an attachment")
             raise ServiceError(502, "JIRA_ATTACHMENT_DOWNLOAD_FAILED", f"Jira attachment download failed with HTTP {exc.code}")
         except URLError:
             raise ServiceError(502, "JIRA_UNAVAILABLE", "Could not download an attachment from Jira")
@@ -265,7 +320,7 @@ def find_target_files(root):
             return
         name = path.name.lower()
         suffix = path.suffix.lower()
-        if suffix in (".log", ".txt") and (name.startswith("mili") or name.startswith("ios")):
+        if suffix in (".log", ".txt") and name.startswith(("mili", "ios", "amazfit")):
             digest = file_sha256(path)
             if digest not in seen_log_hashes:
                 seen_log_hashes.add(digest)
@@ -286,17 +341,17 @@ def find_target_files(root):
     return logs, fits
 
 
-def build_file_session(issue_key, work_root):
+def build_file_session(issue_key, work_root, jira_session, owner_token):
     originals = work_root / "attachments"
     originals.mkdir()
-    attachment_count = download_issue_attachments(issue_key, originals)
+    attachment_count = download_issue_attachments(issue_key, originals, jira_session)
     if attachment_count == 0 or not any(path.is_file() for path in originals.rglob("*")):
         raise ServiceError(404, "NO_ATTACHMENTS", "Jira issue has no attachments", {"feedbackFallback": "not_implemented"})
 
     archive_count = expand_archives(work_root)
     logs, fits = find_target_files(work_root)
     if not logs:
-        raise ServiceError(404, "NO_TARGET_LOGS", "No MILI/ios .log or .txt files were found", {
+        raise ServiceError(404, "NO_TARGET_LOGS", "No MILI/ios/Amazfit .log or .txt files were found", {
             "jiraAttachmentCount": attachment_count,
             "zipArchiveCount": archive_count,
             "feedbackFallback": "not_implemented",
@@ -334,6 +389,7 @@ def build_file_session(issue_key, work_root):
                 "root": session_root,
                 "expiresAt": time.time() + SESSION_TTL_SECONDS,
                 "files": file_map,
+                "ownerToken": owner_token,
             }
     except Exception:
         shutil.rmtree(session_root, ignore_errors=True)
@@ -387,7 +443,6 @@ class Handler(BaseHTTPRequestHandler):
         if request_origin and request_origin in allowed_origins:
             self.send_header("Access-Control-Allow-Origin", request_origin)
             self.send_header("Vary", "Origin")
-            self.send_header("Access-Control-Allow-Credentials", "true")
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -398,14 +453,28 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if self.path == "/health":
-            self.send_json(200, {"status": "ok"})
+        parsed = urlparse(self.path)
+        if parsed.path == "/health":
+            self.send_json(200, {"status": "ok", "jiraAuthentication": "user-password"})
             return
-        match = re.fullmatch(r"/api/v1/sessions/([A-Za-z0-9_-]+)/files/([A-Za-z0-9_-]+)", self.path)
+        if parsed.path == "/api/v1/auth/status":
+            token, session = bearer_session(self)
+            self.send_json(200, {"authenticated": bool(session)})
+            return
+        match = re.fullmatch(r"/api/v1/sessions/([A-Za-z0-9_-]+)/files/([A-Za-z0-9_-]+)", parsed.path)
         if match:
+            token, auth_session = bearer_session(self)
+            if not auth_session:
+                self.send_json(401, {"error": "JIRA_LOGIN_REQUIRED", "message": "Log in to Jira before loading the attachment"})
+                return
             entry = get_session_file(match.group(1), match.group(2))
             if not entry or not entry["path"].is_file():
                 self.send_json(404, {"error": "FILE_EXPIRED_OR_NOT_FOUND", "message": "Temporary file is unavailable; search Jira again"})
+                return
+            with SESSION_LOCK:
+                owner_token = SESSION_STORE.get(match.group(1), {}).get("ownerToken", "")
+            if not secrets.compare_digest(owner_token, token):
+                self.send_json(403, {"error": "SESSION_ACCESS_DENIED", "message": "This temporary file belongs to another Jira session"})
                 return
             size = entry["path"].stat().st_size
             self.send_response(200)
@@ -420,6 +489,32 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(404, {"error": "NOT_FOUND", "message": "Endpoint not found"})
 
     def do_POST(self):
+        if self.path == "/api/v1/auth/logout":
+            token, _ = bearer_session(self)
+            if token:
+                with JIRA_LOGIN_LOCK:
+                    JIRA_LOGIN_SESSIONS.pop(token, None)
+            self.send_json(200, {"authenticated": False})
+            return
+        if self.path == "/api/v1/auth/login":
+            try:
+                payload = self.read_json_body(16 * 1024)
+                jira_session = login_to_jira(
+                    payload.get("baseUrl"),
+                    str(payload.get("username", "")).strip(),
+                    str(payload.get("password", "")),
+                )
+                self.send_json(200, {
+                    "authenticated": True,
+                    "sessionToken": create_login_session(jira_session),
+                })
+            except ServiceError as exc:
+                self.send_json(exc.status, {"error": exc.code, "message": exc.message})
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            except Exception:
+                self.send_json(500, {"error": "INTERNAL_ERROR", "message": "Jira login failed"})
+            return
         match = re.fullmatch(r"/api/v1/issues/([A-Za-z][A-Za-z0-9_]*-[0-9]+)/attachments", self.path)
         if not match:
             self.send_json(404, {"error": "NOT_FOUND", "message": "Endpoint not found"})
@@ -428,9 +523,13 @@ class Handler(BaseHTTPRequestHandler):
         if not ISSUE_KEY_RE.fullmatch(issue_key):
             self.send_json(400, {"error": "INVALID_ISSUE_KEY", "message": "Invalid Jira issue key"})
             return
+        owner_token, auth_session = bearer_session(self)
+        if not auth_session:
+            self.send_json(401, {"error": "JIRA_LOGIN_REQUIRED", "message": "Please log in to Jira first"})
+            return
         try:
             with tempfile.TemporaryDirectory(prefix="lthr-jira-") as temp_dir:
-                manifest = build_file_session(issue_key, Path(temp_dir))
+                manifest = build_file_session(issue_key, Path(temp_dir), auth_session, owner_token)
                 self.send_json(200, manifest)
         except ServiceError as exc:
             self.send_json(exc.status, {"error": exc.code, "message": exc.message, **exc.extra})
@@ -443,16 +542,27 @@ class Handler(BaseHTTPRequestHandler):
         # Do not log request headers or Jira attachment content.
         super().log_message(fmt, *args)
 
+    def read_json_body(self, max_bytes):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            raise ServiceError(400, "INVALID_REQUEST", "Invalid request body length")
+        if length <= 0 or length > max_bytes:
+            raise ServiceError(413, "REQUEST_SIZE_LIMIT", "Request body is missing or too large")
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise ServiceError(400, "INVALID_REQUEST", "Request body must be valid JSON")
+        if not isinstance(payload, dict):
+            raise ServiceError(400, "INVALID_REQUEST", "Request body must be a JSON object")
+        return payload
+
 
 def main():
-    global JIRA_COMMAND
-    JIRA_COMMAND = find_jira_command()
-    if not JIRA_COMMAND:
-        raise SystemExit("ERROR: Jira CLI was not found (expected `jira` in PATH). Service was not started.")
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8080"))
     server = ThreadingHTTPServer((host, port), Handler)
-    print(f"LTHR Jira attachment service listening on {host}:{port} (using {' '.join(JIRA_COMMAND)})", flush=True)
+    print(f"LTHR Jira attachment service listening on {host}:{port}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
