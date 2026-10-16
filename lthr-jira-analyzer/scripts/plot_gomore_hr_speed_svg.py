@@ -9,8 +9,8 @@ import math
 import os
 
 
-WIDTH, HEIGHT = 1560, 650
-LEFT, RIGHT, TOP, BOTTOM = 88, 88, 82, 92
+PIXELS_PER_5_MINUTES, HEIGHT = 250, 780
+LEFT, RIGHT, TOP, BOTTOM = 88, 110, 82, 115
 
 
 def load_data(path):
@@ -49,12 +49,38 @@ def split_polyline(points, value_index, map_x, map_y):
     return chunks
 
 
+def split_area(points, value_index, map_x, map_y, baseline_y):
+    areas, current = [], []
+
+    def append_area(segment):
+        if not segment:
+            return
+        coords = [(map_x(point[0]), map_y(point[value_index])) for point in segment]
+        path = [f"M {coords[0][0]:.1f} {baseline_y:.1f}", f"L {coords[0][0]:.1f} {coords[0][1]:.1f}"]
+        path.extend(f"L {x:.1f} {y:.1f}" for x, y in coords[1:])
+        path.extend((f"L {coords[-1][0]:.1f} {baseline_y:.1f}", "Z"))
+        areas.append(" ".join(path))
+
+    for point in points:
+        if point[value_index] is None:
+            append_area(current)
+            current = []
+        else:
+            current.append(point)
+    append_area(current)
+    return areas
+
+
 def render(csv_path, output):
     points = load_data(csv_path)
-    plot_w, plot_h = WIDTH - LEFT - RIGHT, HEIGHT - TOP - BOTTOM
     ts0, ts1 = points[0][0], points[-1][0]
     if ts1 <= ts0:
         ts1 = ts0 + 1
+    duration = ts1 - ts0
+    plot_w = duration * PIXELS_PER_5_MINUTES / 300
+    plot_h = HEIGHT - TOP - BOTTOM
+    svg_width = math.ceil(LEFT + plot_w + RIGHT)
+    plot_right = LEFT + plot_w
     hr_values = [p[2] for p in points if p[2] is not None]
     speed_values = [p[3] for p in points if p[3] is not None]
     hr_top = max(100.0, math.ceil(max(hr_values, default=0.0) * 1.10 / 10) * 10)
@@ -64,7 +90,7 @@ def render(csv_path, output):
     map_speed = lambda value: TOP + plot_h * (1.0 - value / speed_top)
 
     lines = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}">',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{svg_width}" height="{HEIGHT}" viewBox="0 0 {svg_width} {HEIGHT}">',
         '<rect width="100%" height="100%" fill="white"/>',
         '<style>text{font-family:Arial,sans-serif;font-size:13px;fill:#333}.small{font-size:12px;fill:#666}</style>',
         f'<text x="{LEFT}" y="28" font-size="18">{html.escape(os.path.basename(csv_path))}</text>',
@@ -81,18 +107,21 @@ def render(csv_path, output):
         else:
             speed_label = "—"
         lines += [
-            f'<line x1="{LEFT}" y1="{y:.1f}" x2="{WIDTH - RIGHT}" y2="{y:.1f}" stroke="#ddd" stroke-dasharray="3,3"/>',
+            f'<line x1="{LEFT}" y1="{y:.1f}" x2="{plot_right:.1f}" y2="{y:.1f}" stroke="#ddd" stroke-dasharray="3,3"/>',
             f'<text x="{LEFT - 9}" y="{y + 4:.1f}" text-anchor="end" fill="#d62728">{hr_label:.0f}</text>',
-            f'<text x="{WIDTH - RIGHT + 9}" y="{y + 4:.1f}" fill="#1f77b4">{speed_label}</text>',
+            f'<text x="{plot_right + 9:.1f}" y="{y + 4:.1f}" fill="#1f77b4">{speed_label}</text>',
         ]
     lines += [
         f'<line x1="{LEFT}" y1="{TOP}" x2="{LEFT}" y2="{TOP + plot_h}" stroke="#d62728"/>',
-        f'<line x1="{WIDTH - RIGHT}" y1="{TOP}" x2="{WIDTH - RIGHT}" y2="{TOP + plot_h}" stroke="#1f77b4"/>',
+        f'<line x1="{plot_right:.1f}" y1="{TOP}" x2="{plot_right:.1f}" y2="{TOP + plot_h}" stroke="#1f77b4"/>',
         f'<text x="{LEFT}" y="{TOP - 8}" fill="#d62728">HR (bpm)</text>',
-        f'<text x="{WIDTH - RIGHT}" y="{TOP - 8}" text-anchor="end" fill="#1f77b4">Pace (min/km)</text>',
+        f'<text x="{plot_right:.1f}" y="{TOP - 8}" fill="#1f77b4">Pace (min/km)</text>',
+        f'<text class="small" x="{LEFT + plot_w / 2:.1f}" y="{TOP - 8}" text-anchor="middle">HR / Pace comparison (all samples)</text>',
     ]
-    for i in range(7):
-        elapsed = (ts1 - ts0) * i / 6
+    tick_times = list(range(0, duration + 1, 300))
+    if not tick_times or tick_times[-1] != duration:
+        tick_times.append(duration)
+    for elapsed in tick_times:
         x = map_x(ts0 + elapsed)
         elapsed_minutes = int(round(elapsed / 60))
         duration_label = f"{elapsed_minutes // 60}:{elapsed_minutes % 60:02d}"
@@ -101,10 +130,13 @@ def render(csv_path, output):
             f'<text class="small" x="{x:.1f}" y="{TOP + plot_h + 23}" text-anchor="middle">{duration_label}</text>',
         ]
     lines.append(f'<text class="small" x="{LEFT + plot_w / 2:.1f}" y="{HEIGHT - 45}" text-anchor="middle">Duration (h:mm)</text>')
-    for chunk in split_polyline(points, 2, map_x, map_hr):
-        lines.append(f'<polyline points="{" ".join(chunk)}" fill="none" stroke="#d62728" stroke-width="1.2"/>')
-    for chunk in split_polyline(points, 3, map_x, map_speed):
-        lines.append(f'<polyline points="{" ".join(chunk)}" fill="none" stroke="#1f77b4" stroke-width="1.2"/>')
+    series = (("#d62728", 2, map_hr), ("#1f77b4", 3, map_speed))
+    for color, value_index, mapper in series:
+        for area in split_area(points, value_index, map_x, mapper, TOP + plot_h):
+            lines.append(f'<path d="{area}" fill="{color}" fill-opacity="0.10"/>')
+    for color, value_index, mapper in series:
+        for chunk in split_polyline(points, value_index, map_x, mapper):
+            lines.append(f'<polyline points="{" ".join(chunk)}" fill="none" stroke="{color}" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>')
     invalid_hr = sum(p[2] is None for p in points)
     invalid_speed = sum(p[3] is None for p in points)
     # Count the sentinel in the source data even though it is excluded from the curve.
