@@ -1052,7 +1052,9 @@ def main():
     parser.add_argument("--reasoning-effort", default="", help="Reasoning effort for Jira comment signature")
     parser.add_argument("--no-comment", action="store_true", help="Do not post Jira comments")
     parser.add_argument("--collect-sample", action="store_true", help="Upload sample CSVs to Feishu Drive GomoreSDK_Report/data_sample/JIRA_CASE/")
-    parser.add_argument("--plot", action="store_true", help="Generate and upload HR/SPEED SVGs for each CSV")
+    parser.add_argument("--plot", dest="plot", action="store_true", help="Generate and upload HR/SPEED SVGs for each CSV (default)")
+    parser.add_argument("--no-plot", dest="plot", action="store_false", help="Skip generating and uploading HR/SPEED SVGs")
+    parser.set_defaults(plot=True)
     parser.add_argument("--report", default="", help="Batch report output path (.md)")
     args = parser.parse_args()
 

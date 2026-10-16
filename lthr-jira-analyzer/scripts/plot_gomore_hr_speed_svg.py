@@ -10,7 +10,7 @@ import os
 
 
 WIDTH, HEIGHT = 1560, 650
-LEFT, RIGHT, TOP, BOTTOM = 88, 88, 58, 92
+LEFT, RIGHT, TOP, BOTTOM = 88, 88, 82, 92
 
 
 def load_data(path):
@@ -26,7 +26,9 @@ def load_data(path):
             local = datetime.utcfromtimestamp(ts) + timedelta(minutes=tz)
             hr = float(row["HR"])
             speed = float(row["SPEED"])
-            points.append((ts, local, hr if hr >= 0 else None, speed if speed >= 0 else None))
+            # 255 is the sensor's invalid-HR sentinel; plotting it as a real
+            # value creates a spike and expands the HR axis for the whole chart.
+            points.append((ts, local, hr if 0 <= hr < 255 else None, speed if speed >= 0 else None))
     if not points:
         raise ValueError("CSV contains no data rows")
     return points
@@ -55,8 +57,8 @@ def render(csv_path, output):
         ts1 = ts0 + 1
     hr_values = [p[2] for p in points if p[2] is not None]
     speed_values = [p[3] for p in points if p[3] is not None]
-    hr_top = max(260.0, max(hr_values, default=0.0) * 1.05)
-    speed_top = max(1.0, max(speed_values, default=0.0) * 1.10)
+    hr_top = max(100.0, math.ceil(max(hr_values, default=0.0) * 1.10 / 10) * 10)
+    speed_top = max(1.0, math.ceil(max(speed_values, default=0.0) * 1.10 * 2) / 2)
     map_x = lambda ts: LEFT + (ts - ts0) * plot_w / (ts1 - ts0)
     map_hr = lambda value: TOP + plot_h * (1.0 - value / hr_top)
     map_speed = lambda value: TOP + plot_h * (1.0 - value / speed_top)
@@ -85,20 +87,24 @@ def render(csv_path, output):
         f'<text x="{WIDTH - RIGHT}" y="{TOP - 8}" text-anchor="end" fill="#1f77b4">Speed (km/h)</text>',
     ]
     for i in range(7):
-        ts = ts0 + (ts1 - ts0) * i / 6
-        x = map_x(ts)
-        local = datetime.utcfromtimestamp(ts) + (points[0][1] - datetime.utcfromtimestamp(ts0))
+        elapsed = (ts1 - ts0) * i / 6
+        x = map_x(ts0 + elapsed)
+        elapsed_minutes = int(round(elapsed / 60))
+        duration_label = f"{elapsed_minutes // 60}:{elapsed_minutes % 60:02d}"
         lines += [
             f'<line x1="{x:.1f}" y1="{TOP + plot_h}" x2="{x:.1f}" y2="{TOP + plot_h + 5}" stroke="#777"/>',
-            f'<text class="small" x="{x:.1f}" y="{TOP + plot_h + 23}" text-anchor="middle">{local:%H:%M}</text>',
+            f'<text class="small" x="{x:.1f}" y="{TOP + plot_h + 23}" text-anchor="middle">{duration_label}</text>',
         ]
+    lines.append(f'<text class="small" x="{LEFT + plot_w / 2:.1f}" y="{HEIGHT - 45}" text-anchor="middle">Duration (h:mm)</text>')
     for chunk in split_polyline(points, 2, map_x, map_hr):
         lines.append(f'<polyline points="{" ".join(chunk)}" fill="none" stroke="#d62728" stroke-width="1.2"/>')
     for chunk in split_polyline(points, 3, map_x, map_speed):
         lines.append(f'<polyline points="{" ".join(chunk)}" fill="none" stroke="#1f77b4" stroke-width="1.2"/>')
     invalid_hr = sum(p[2] is None for p in points)
     invalid_speed = sum(p[3] is None for p in points)
-    hr_255 = sum(p[2] == 255 for p in points)
+    # Count the sentinel in the source data even though it is excluded from the curve.
+    with open(csv_path, newline="", encoding="utf-8-sig") as f:
+        hr_255 = sum(float(row["HR"]) == 255 for row in csv.DictReader(f))
     lines += [
         f'<text class="small" x="{LEFT}" y="{HEIGHT - 25}">rows={len(points)}; HR invalid={invalid_hr}; HR=255={hr_255}; Speed invalid={invalid_speed}</text>',
         '</svg>',

@@ -65,7 +65,8 @@ Windows 双击批量运行：
 - `--reasoning-effort`：评论签名中的推理强度等级（可选，不传则优先从环境变量读取）。
 - `--no-comment`：仅上传 CSV，不写 Jira 评论。
 - `--collect-sample`：将样本 CSV 收录到飞书云盘 `GomoreSDK_Report/data_sample/JIRA_CASE/` 目录下（按 `{issue_key}_{原始文件名}` 命名）。
-- `--plot`：为每个样本 CSV 生成 HR/SPEED 曲线 SVG，并与 CSV 一起上传 Jira（仅使用 Python 标准库）。
+- 默认：为每个样本 CSV 生成 HR/SPEED 曲线 SVG，并与 CSV 一起上传 Jira（仅使用 Python 标准库）。
+- `--no-plot`：关闭 SVG 生成与上传；`--plot` 保留为显式开启的兼容参数。
 - `--report`：批量模式报告输出路径（默认自动生成 `lthr_batch_report_YYYYMMDD_HHMMSS.md`）。
 
 ## 关键领域知识
@@ -94,7 +95,7 @@ GoMore 乳酸阈（LTHR）算法**仅在以下运动类型下生效**：
 6. 自动解压 zip（含嵌套 zip），搜索 `*.txt` / `*.log`，优先取最大文件作为源日志。
 7. 若 Jira 附件里原本没有 `*.zip`，则会把通过 `zepp feedback download` 下载到的 `*.zip` 压缩包，以及 `*.jpg` 图片自动回传到该 Jira。
 7. 调用 `gomore_log_to_csv.py --json` 解析日志，生成样本 CSV。
-8. 使用 `--plot` 时，为每个 CSV 生成 `*_hr_speed.svg`；上传 CSV、SVG、解析产生的日志文件（`*.log` / `*.txt`，不含 `hmble_log.log`）和 `*.jpg` 图片到对应 Jira。
+8. 默认对每个 CSV 生成 `*_hr_speed.svg`；上传 CSV、SVG、解析产生的日志文件（`*.log` / `*.txt`，不含 `hmble_log.log`）和 `*.jpg` 图片到对应 Jira。使用 `--no-plot` 时跳过 SVG 生成与上传。
 9. 写入 Jira 评论摘要（可通过 `--no-comment` 关闭）。
 10. 批量模式下生成汇总报告，包含每个 Jira 的单问题描述总结。
 
