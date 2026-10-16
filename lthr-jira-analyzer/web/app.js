@@ -1,11 +1,16 @@
 const jiraHealthUrl = 'https://www.active-ai.cloud/lthr-jira-api/health';
 const jiraHealthCheckKey = 'lthrJiraHealthChecked';
-const jiraHealthRedirected = !sessionStorage.getItem(jiraHealthCheckKey)
-  && location.hostname === 'active-ailab.github.io';
-if (jiraHealthRedirected) {
+const healthCheckWasOpened = sessionStorage.getItem(jiraHealthCheckKey) === '1';
+const shouldOpenJiraHealth = location.hostname === 'active-ailab.github.io' && !healthCheckWasOpened;
+if (shouldOpenJiraHealth) {
   sessionStorage.setItem(jiraHealthCheckKey, '1');
-  location.assign(jiraHealthUrl);
+  location.assign(`${jiraHealthUrl}?return=app`);
+} else if (healthCheckWasOpened) {
+  sessionStorage.removeItem(jiraHealthCheckKey);
 }
+window.addEventListener('pageshow', (event) => {
+  if (event.persisted) sessionStorage.removeItem(jiraHealthCheckKey);
+});
 
 const selectedFiles = { log: [], fit: [] };
 const acceptedExtensions = { log: ['.log', '.txt'], fit: ['.fit'] };
@@ -211,7 +216,7 @@ jiraLoginForm.addEventListener('submit', async (event) => {
 });
 
 updateJiraLoginButton();
-if (!jiraHealthRedirected) validateJiraSession();
+if (!shouldOpenJiraHealth) validateJiraSession();
 
 jiraAttachmentForm.addEventListener('submit', async (event) => {
   event.preventDefault();

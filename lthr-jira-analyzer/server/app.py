@@ -15,7 +15,7 @@ import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
@@ -455,6 +455,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/health":
+            if parse_qs(parsed.query).get("return") == ["app"]:
+                self.send_response(302)
+                self.send_header("Location", "https://active-ailab.github.io/active-lthr-workflow/")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
             self.send_json(200, {"status": "ok", "jiraAuthentication": "user-password"})
             return
         if parsed.path == "/api/v1/auth/status":

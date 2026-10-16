@@ -94,7 +94,7 @@ sudo systemctl status lthr-jira-attachment --no-pager
 curl http://127.0.0.1:8080/health
 ```
 
-The health request should return HTTP 200 and `{"status": "ok", ...}`. To inspect service logs, use `sudo journalctl -u lthr-jira-attachment -n 100 --no-pager`.
+The regular health request should return HTTP 200 and `{"status": "ok", ...}`. The frontend uses `/health?return=app` to trigger the browser's certificate interstitial and then redirect back to the analyzer after the user continues. To inspect service logs, use `sudo journalctl -u lthr-jira-attachment -n 100 --no-pager`.
 
 ### 3. Add a dedicated Caddy route
 
@@ -127,6 +127,7 @@ If the browser reports a CORS error, confirm `ALLOWED_ORIGIN` exactly matches th
 ## Endpoints
 
 - `GET /health` reports process status and authentication mode.
+- `GET /health?return=app` redirects to the GitHub Pages analyzer after the browser accepts the service certificate.
 - `POST /api/v1/auth/login` accepts `{ "baseUrl", "username", "password" }`, authenticates against Jira, and returns an opaque service session token.
 - `GET /api/v1/auth/status` checks a session using `Authorization: Bearer {sessionToken}`.
 - `POST /api/v1/auth/logout` removes the service session.
