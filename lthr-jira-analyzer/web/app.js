@@ -1,3 +1,12 @@
+const jiraHealthUrl = 'https://www.active-ai.cloud/lthr-jira-api/health';
+const jiraHealthCheckKey = 'lthrJiraHealthChecked';
+const jiraHealthRedirected = !sessionStorage.getItem(jiraHealthCheckKey)
+  && location.hostname === 'active-ailab.github.io';
+if (jiraHealthRedirected) {
+  sessionStorage.setItem(jiraHealthCheckKey, '1');
+  location.assign(jiraHealthUrl);
+}
+
 const selectedFiles = { log: [], fit: [] };
 const acceptedExtensions = { log: ['.log', '.txt'], fit: ['.fit'] };
 const uploadMessage = document.querySelector('.upload-message');
@@ -202,7 +211,7 @@ jiraLoginForm.addEventListener('submit', async (event) => {
 });
 
 updateJiraLoginButton();
-validateJiraSession();
+if (!jiraHealthRedirected) validateJiraSession();
 
 jiraAttachmentForm.addEventListener('submit', async (event) => {
   event.preventDefault();
