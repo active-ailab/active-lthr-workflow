@@ -74,17 +74,22 @@ def render(csv_path, output):
         ratio = i / 5
         y = TOP + plot_h * ratio
         hr_label = hr_top * (1 - ratio)
-        speed_label = speed_top * (1 - ratio)
+        speed_tick = speed_top * (1 - ratio)
+        if speed_tick > 0:
+            pace_seconds = int(round(3600 / speed_tick))
+            speed_label = f"{pace_seconds // 60}′{pace_seconds % 60:02d}″"
+        else:
+            speed_label = "—"
         lines += [
             f'<line x1="{LEFT}" y1="{y:.1f}" x2="{WIDTH - RIGHT}" y2="{y:.1f}" stroke="#ddd" stroke-dasharray="3,3"/>',
             f'<text x="{LEFT - 9}" y="{y + 4:.1f}" text-anchor="end" fill="#d62728">{hr_label:.0f}</text>',
-            f'<text x="{WIDTH - RIGHT + 9}" y="{y + 4:.1f}" fill="#1f77b4">{speed_label:.1f}</text>',
+            f'<text x="{WIDTH - RIGHT + 9}" y="{y + 4:.1f}" fill="#1f77b4">{speed_label}</text>',
         ]
     lines += [
         f'<line x1="{LEFT}" y1="{TOP}" x2="{LEFT}" y2="{TOP + plot_h}" stroke="#d62728"/>',
         f'<line x1="{WIDTH - RIGHT}" y1="{TOP}" x2="{WIDTH - RIGHT}" y2="{TOP + plot_h}" stroke="#1f77b4"/>',
         f'<text x="{LEFT}" y="{TOP - 8}" fill="#d62728">HR (bpm)</text>',
-        f'<text x="{WIDTH - RIGHT}" y="{TOP - 8}" text-anchor="end" fill="#1f77b4">Speed (km/h)</text>',
+        f'<text x="{WIDTH - RIGHT}" y="{TOP - 8}" text-anchor="end" fill="#1f77b4">Pace (min/km)</text>',
     ]
     for i in range(7):
         elapsed = (ts1 - ts0) * i / 6
