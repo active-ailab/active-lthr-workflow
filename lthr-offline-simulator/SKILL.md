@@ -34,11 +34,12 @@ description: 在真机上对GoMore离线CSV进行仿真并取日志，也适用�
 
 ## 一、单样本 (`run_lthr_offline_sim.py`)
 
-流程: 下载CSV → 下发设备 → 清理旧状态 → 拷CSV → 重启 → `utest` × `--runs` 次 → 提取结果 → Jira回传
+流程: 下载CSV → 下发设备并清理旧状态 → 拷CSV → 重启 → `utest` × `--runs` 次 → 提取结果 → Jira回传。多轮默认沿用设备历史状态；传 `--clean-between-runs` 可在每轮间清理历史并重启设备。
 
 ```bash
 python3 scripts/run_lthr_offline_sim.py <ISSUE_KEY> --mgr-port COM37 --uart-port COM36   # WSL 推荐: 在线下载→仿真→回传
 python3 scripts/run_lthr_offline_sim.py <ISSUE_KEY> --csv-path /tmp/s.csv --mgr-port COM37 --uart-port COM36
+python3 scripts/run_lthr_offline_sim.py <ISSUE_KEY> --csv-path /tmp/s.csv --runs 5 --clean-between-runs --mgr-port COM37 --uart-port COM36
 python3 scripts/run_lthr_offline_sim.py <ISSUE_KEY> --all-csvs --mgr-port COM37 --uart-port COM36
 python3 scripts/run_lthr_offline_sim.py <ISSUE_KEY> --csv-path /tmp/s.csv --skip-jira --deploy-only --mgr-port COM37
 # 只做挂盘/清理/复制/校验/卸盘健康检查，不进入 UART utest
@@ -49,7 +50,8 @@ python3 scripts/run_lthr_offline_sim.py <ISSUE_KEY> --csv-path /tmp/s.csv --skip
 | 参数 | 默认 | 说明 |
 |------|------|------|
 | `ISSUE_KEY`（位置参数） | 必填 | Jira issue key，如 `ITS-51497` |
-| `--runs` | 10 | 重复仿真次数，用于趋势分析 |
+| `--runs` | 1 | 仿真次数；多轮用于趋势分析 |
+| `--clean-between-runs` | 关闭 | 多轮时在每轮之间清理历史文件并重启设备，提升各轮独立性 |
 | `--csv-path` | — | 本地 CSV 文件（隐含 `--skip-jira`） |
 | `--csv-name` | — | 指定 CSV 附件名或 ID |
 | `--all-csvs` | — | 跑所有 `gomore_data_*.csv` 附件 |

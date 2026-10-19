@@ -68,13 +68,17 @@ def main() -> None:
     parser.add_argument("--work-dir", default="", help="Root work directory (default: /tmp/tmp_lthr_out/topic_ota)")
     parser.add_argument("--mgr-port", default="", help="Explicit MGR port when multiple devices are connected")
     parser.add_argument("--uart-port", default="", help="Explicit UART port when multiple devices are connected")
-    parser.add_argument("--runs", type=int, default=10, help="Simulation run count (default: 10)")
+    parser.add_argument("--runs", type=int, default=1, help="Simulation run count (default: 1)")
+    parser.add_argument(
+        "--clean-between-runs",
+        action="store_true",
+        help="Clear GoMore history and reset the device before each run after the first",
+    )
     parser.add_argument("--skip-jira", action="store_true", help="Skip all Jira communication (offline mode, results saved locally only)")
     parser.add_argument("--csv-path", default="", help="Local CSV file path (bypass Jira download, implies --skip-jira)")
     parser.add_argument("--boot-timeout-sec", type=int, default=180, help="Timeout waiting for ready screen logs")
     parser.add_argument("--mount-wait-sec", type=int, default=30, help="Timeout waiting for mounted data disk")
     parser.add_argument("--run-timeout-sec", type=int, default=2400, help="Per-run timeout waiting for test end")
-    parser.add_argument("--listen-chunk-sec", type=int, default=5, help="UART listen window per poll")
     parser.add_argument("--mount-settle-sec", type=int, default=3, help="Sleep after entering disk mode")
     parser.add_argument("--serial-settle-sec", type=int, default=5, help="Sleep after leaving disk mode")
     parser.add_argument("--deploy-attempts", type=int, default=3, help="Retry count for mount/copy/unmount deployment before UART utest")
@@ -142,10 +146,10 @@ def main() -> None:
             mgr_port=args.mgr_port,
             uart_port=args.uart_port,
             runs=args.runs,
+            clean_between_runs=args.clean_between_runs,
             boot_timeout_sec=args.boot_timeout_sec,
             mount_wait_sec=args.mount_wait_sec,
             run_timeout_sec=args.run_timeout_sec,
-            listen_chunk_sec=args.listen_chunk_sec,
             serial_settle_sec=args.serial_settle_sec,
             deploy_attempts=args.deploy_attempts,
             deploy_only=args.deploy_only,

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import re
-import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from .data_analyzer import analyze_trend, summarize_stability
 from .device_flow import deploy_data_to_device, ensure_device_ready_sequence
-from .utest_runner import listen_uart, send_uart_cmd
+from .utest_runner import run_uart_session
 
 
 START_MARKER = "GoMore Offline CSV Test Start"
@@ -19,9 +18,7 @@ RESULT_RE = re.compile(
 
 
 DeployHook = Callable[[str], Dict[str, object]]
-SendUartFn = Callable[[Path, str, str, int, Optional[float]], str]
-ListenUartFn = Callable[[Path, str, int, Optional[float]], str]
-TimeFn = Callable[[], float]
+RunUartSessionFn = Callable[[Path, str, str, int, Optional[float]], str]
 
 
 def _match_to_result(match: re.Match[str]) -> Dict[str, object]:
@@ -48,64 +45,38 @@ def run_single_simulation(
     run_index: int,
     uart_port: str,
     run_timeout_sec: int,
-    listen_chunk_sec: int,
     *,
-    send_uart_cmd_fn: SendUartFn = send_uart_cmd,
-    listen_uart_fn: ListenUartFn = listen_uart,
-    time_fn: TimeFn = time.time,
+    run_uart_session_fn: RunUartSessionFn = run_uart_session,
 ) -> Tuple[Dict[str, object], str]:
     run_log_parts: List[str] = []
-    initial = send_uart_cmd_fn(
-        wlctl_path,
-        "utest gomore_offline_csv_tests",
-        uart_port,
-        1500,
-        20,
-    )
-    run_log_parts.append(initial)
-    full_log = initial
-    latest_result = parse_latest_result(full_log)
-    started = (
-        START_MARKER in full_log
-        or END_MARKER in full_log
-        or latest_result is not None
-        or "utest module [gomore_offline_csv_tests] test report" in full_log
-    )
+    timeout = max(float(run_timeout_sec) + 30.0, 45.0)
+    try:
+        full_log = run_uart_session_fn(
+            wlctl_path,
+            "utest gomore_offline_csv_tests",
+            uart_port=uart_port,
+            seconds=run_timeout_sec,
+            timeout=timeout,
+            until_marker=END_MARKER,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Run #{run_index}: UART session failed: {exc}") from exc
+    run_log_parts.append(full_log)
 
-    deadline = time_fn() + run_timeout_sec
+    started = START_MARKER in full_log
     ended = END_MARKER in full_log
-
-    while time_fn() < deadline and not ended:
-        seconds = max(1, min(listen_chunk_sec, int(deadline - time_fn()) or 1))
-        try:
-            chunk = listen_uart_fn(
-                wlctl_path,
-                uart_port,
-                seconds,
-                seconds + 8,
-            )
-        except Exception as exc:
-            run_log_parts.append(f"\n[WARN] UART listen chunk failed during run #{run_index}: {exc}\n")
-            continue
-        run_log_parts.append(chunk)
-        full_log += chunk
-        if START_MARKER in chunk:
-            started = True
-        parsed = parse_latest_result(chunk)
-        if parsed:
-            latest_result = parsed
-            started = True
-        if "utest module [gomore_offline_csv_tests] test report" in chunk:
-            started = True
-        if started and END_MARKER in chunk:
-            ended = True
-            break
+    latest_result = parse_latest_result(full_log)
 
     if not started:
-        raise RuntimeError(f"Run #{run_index}: did not detect '{START_MARKER}'")
+        raise RuntimeError(
+            f"Run #{run_index}: UTEST_START_NOT_CONFIRMED; did not detect '{START_MARKER}'. "
+            f"Recent UART output:\n{full_log[-4000:]}"
+        )
     if not ended:
-        tail = full_log[-4000:]
-        raise RuntimeError(f"Run #{run_index}: timed out waiting for '{END_MARKER}'. Recent UART output:\n{tail}")
+        raise RuntimeError(
+            f"Run #{run_index}: UTEST_TIMEOUT; did not detect '{END_MARKER}'. "
+            f"Recent UART output:\n{full_log[-4000:]}"
+        )
 
     result: Dict[str, object] = {
         "run": run_index,
@@ -132,12 +103,12 @@ def run_sample_flow(
     boot_timeout_sec: int,
     mount_wait_sec: int,
     run_timeout_sec: int,
-    listen_chunk_sec: int,
     serial_settle_sec: int,
     deploy_attempts: int,
     deploy_only: bool,
     deploy_hook: DeployHook,
     deploy_hook_wsl: Optional[DeployHook] = None,
+    clean_between_runs: bool = False,
 ) -> Tuple[Dict[str, object], str]:
     raw_sections: List[str] = []
     gomore_root_text, deploy_log = deploy_data_to_device(
@@ -177,13 +148,49 @@ def run_sample_flow(
     results: List[Dict[str, object]] = []
     for idx in range(1, runs + 1):
         raw_sections.append(f"===== RUN {idx} =====\n")
-        result, run_log = run_single_simulation(
-            wlctl_path,
-            run_index=idx,
-            uart_port=uart_port,
-            run_timeout_sec=run_timeout_sec,
-            listen_chunk_sec=listen_chunk_sec,
-        )
+        if idx > 1 and clean_between_runs:
+            raw_sections.append(f"===== PREPARE ISOLATED RUN {idx} =====\n")
+            try:
+                _, repeat_deploy_log = deploy_data_to_device(
+                    wlctl_path=wlctl_path,
+                    mgr_port=mgr_port,
+                    disk_root=disk_root,
+                    mount_wait_sec=mount_wait_sec,
+                    deploy_attempts=deploy_attempts,
+                    deploy_hook=deploy_hook,
+                    deploy_hook_wsl=deploy_hook_wsl or deploy_hook,
+                )
+                raw_sections.append(repeat_deploy_log)
+                ensure_device_ready_sequence(
+                    wlctl_path=wlctl_path,
+                    mgr_port=mgr_port,
+                    uart_port=uart_port,
+                    boot_timeout_sec=boot_timeout_sec,
+                    serial_settle_sec=serial_settle_sec,
+                )
+            except Exception as exc:
+                error = f"Run #{idx}: failed to reset and redeploy clean state: {exc}"
+                results.append({"run": idx, "status": "deploy_error", "error": error})
+                raw_sections.append(f"[ERROR] {error}\n")
+                continue
+
+        try:
+            result, run_log = run_single_simulation(
+                wlctl_path,
+                run_index=idx,
+                uart_port=uart_port,
+                run_timeout_sec=run_timeout_sec,
+            )
+        except Exception as exc:
+            error = str(exc)
+            if "UART session failed" in error:
+                status = "uart_error"
+            elif "UTEST_START_NOT_CONFIRMED" in error:
+                status = "utest_start_not_confirmed"
+            else:
+                status = "utest_timeout"
+            result = {"run": idx, "status": status, "error": error}
+            run_log = f"[ERROR] {error}\n"
         results.append(result)
         raw_sections.append(run_log)
 

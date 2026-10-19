@@ -27,11 +27,9 @@ class OfflineSimRunnerTests(unittest.TestCase):
     def test_run_single_simulation_collects_result_after_listen(self) -> None:
         listen_calls = []
 
-        def fake_send(wlctl_path, cmd_text, uart_port, read_ms, timeout):
+        def fake_session(wlctl_path, cmd_text, uart_port, seconds, timeout, until_marker):
             self.assertEqual(cmd_text, "utest gomore_offline_csv_tests")
-            return "booting...\n"
-
-        def fake_listen(wlctl_path, uart_port, seconds, timeout):
+            self.assertEqual(until_marker, offline_sim_runner.END_MARKER)
             listen_calls.append((seconds, timeout))
             return (
                 "GoMore Offline CSV Test Start\n"
@@ -44,9 +42,7 @@ class OfflineSimRunnerTests(unittest.TestCase):
             run_index=1,
             uart_port="COM38",
             run_timeout_sec=5,
-            listen_chunk_sec=2,
-            send_uart_cmd_fn=fake_send,
-            listen_uart_fn=fake_listen,
+            run_uart_session_fn=fake_session,
         )
         self.assertEqual(result["status"], "ok")
         self.assertEqual(result["ltSpeed"], 1.23)
@@ -54,20 +50,7 @@ class OfflineSimRunnerTests(unittest.TestCase):
         self.assertTrue(listen_calls)
 
     def test_run_single_simulation_raises_when_start_marker_missing(self) -> None:
-        class FakeClock:
-            def __init__(self) -> None:
-                self.value = 0
-
-            def time(self) -> int:
-                self.value += 1
-                return self.value
-
-        clock = FakeClock()
-
-        def fake_send(wlctl_path, cmd_text, uart_port, read_ms, timeout):
-            return "booting...\n"
-
-        def fake_listen(wlctl_path, uart_port, seconds, timeout):
+        def fake_session(wlctl_path, cmd_text, uart_port, seconds, timeout, until_marker):
             return "still booting...\n"
 
         with self.assertRaises(RuntimeError) as ctx:
@@ -76,10 +59,7 @@ class OfflineSimRunnerTests(unittest.TestCase):
                 run_index=2,
                 uart_port="COM38",
                 run_timeout_sec=2,
-                listen_chunk_sec=1,
-                send_uart_cmd_fn=fake_send,
-                listen_uart_fn=fake_listen,
-                time_fn=clock.time,
+                run_uart_session_fn=fake_session,
             )
         self.assertIn("did not detect", str(ctx.exception))
 
@@ -110,7 +90,6 @@ class OfflineSimRunnerTests(unittest.TestCase):
                 boot_timeout_sec=10,
                 mount_wait_sec=20,
                 run_timeout_sec=30,
-                listen_chunk_sec=5,
                 serial_settle_sec=2,
                 deploy_attempts=1,
                 deploy_only=True,

@@ -97,6 +97,23 @@ def listen_uart(
         raise RuntimeError(append_runtime_hint(message)) from exc
 
 
+def run_uart_session(
+    wlctl_path: Path,
+    cmd_text: str,
+    uart_port: str = "",
+    seconds: int = 5,
+    timeout: Optional[float] = None,
+    until_marker: str = "",
+) -> str:
+    """Open UART once, send a command, and collect its output in that session."""
+    try:
+        return _make_uart_device(wlctl_path, uart_port=uart_port).run_uart_session(
+            cmd_text, seconds=seconds, timeout=timeout, until_marker=until_marker
+        )
+    except Exception as exc:
+        raise RuntimeError(append_runtime_hint(str(exc))) from exc
+
+
 def wait_device_ready(
     dev: WatchlinkDeviceProtocol,
     timeout_sec: int,
@@ -265,6 +282,7 @@ __all__ = [
     "WatchlinkDeviceProtocol",
     "listen_device_uart",
     "listen_uart",
+    "run_uart_session",
     "prepare_device_for_long_log",
     "prepare_uart_shell_for_long_log",
     "send_device_uart",
