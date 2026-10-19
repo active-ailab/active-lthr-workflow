@@ -21,5 +21,5 @@ CHAT_ID = "oc_1ea73f4f7b8263de4346787f9640ada4"     # 飞书群 ID，用于步�
 DATA_SAMPLE_FOLDER = "HYS7fstGll8lGedAVKFc6RNxnAb"   # 飞书云盘 data_sample 文件夹 token，多样本仿真时优先从此拉取
 
 # ── 默认输出目录 ──
-# 传 --offline-summary 时会自动跟随 summary 目录，无需修改。
-OUTPUT_DIR = None    # None 表示使用 DATA_DIR（见 _pipeline_common.py）
+# 默认由 run_pipeline.py 按输入文件生成系统临时目录下的稳定任务目录；需要固定位置时传 --output-dir。
+OUTPUT_DIR = None    # 保留兼容字段；命令行 --output-dir 控制本地输出位置。

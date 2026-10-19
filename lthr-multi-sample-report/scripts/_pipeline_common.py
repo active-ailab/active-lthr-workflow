@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import glob
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 
 # Pipeline 14 步细化说明（供实现与调试参考）
 #
@@ -211,10 +213,34 @@ def configure_case_routing(args, steps_explicit: bool) -> None:
 
 
 def get_output_dir(args) -> str:
-    """统一的输出目录。未显式指定时沿用旧的 DATA_DIR。"""
-    output_dir = getattr(args, "output_dir", None) or DATA_DIR
+    """Return the explicit output directory or a stable temp directory for this input."""
+    output_dir = getattr(args, "output_dir", None) or resolve_default_output_dir(args)
     os.makedirs(output_dir, exist_ok=True)
     return output_dir
+
+
+def resolve_default_output_dir(args) -> str:
+    """Keep generated artifacts out of Lyon's input data_sample directory."""
+    inputs = (
+        ("summary", getattr(args, "offline_summary", None)),
+        ("log", getattr(args, "log_file", None)),
+        ("json", getattr(args, "json_file", None)),
+        ("jira_json", getattr(args, "jira_json", None)),
+    )
+    source_kind, source_path = next(((kind, path) for kind, path in inputs if path), ("sdk", ""))
+    if source_path:
+        absolute_path = os.path.abspath(os.path.expanduser(source_path))
+        stem = os.path.splitext(os.path.basename(absolute_path))[0]
+        identity = absolute_path
+    else:
+        stem = getattr(args, "sdk_ver", "unknown") or "unknown"
+        jira_issues = getattr(args, "jira_issues", None) or []
+        identity = f"{stem}:{getattr(args, 'case', '')}:{','.join(jira_issues)}"
+
+    safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-") or "input"
+    path_hash = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:8]
+    task_dir = f"{source_kind}_{safe_stem}_{path_hash}"
+    return os.path.join(tempfile.gettempdir(), "lthr-multi-sample-report", task_dir)
 
 
 def get_search_dirs(args) -> list:
@@ -251,10 +277,6 @@ def resolve_offline_summary(args) -> None:
 
     if workflow and workflow not in {"multi_sample", "img_extract"}:
         print(f"[offline-summary] 警告: 非预期 workflow={workflow}，仍继续尝试解析")
-
-    if not getattr(args, "output_dir", None):
-        args.output_dir = os.path.dirname(os.path.abspath(args.offline_summary))
-        print(f"[offline-summary] 默认输出目录: {args.output_dir}")
 
     if not args.log_file and log_path:
         args.log_file = log_path

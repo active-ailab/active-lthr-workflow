@@ -16,7 +16,7 @@ import _pipeline_common  # noqa: E402
 
 
 class PipelineCommonTests(unittest.TestCase):
-    def test_resolve_offline_summary_populates_output_dir_and_log_path(self) -> None:
+    def test_resolve_offline_summary_keeps_log_and_uses_stable_temp_output_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             summary_path = Path(tmp) / "summary.json"
             log_path = Path(tmp) / "run.log"
@@ -34,8 +34,11 @@ class PipelineCommonTests(unittest.TestCase):
             )
             _pipeline_common.resolve_offline_summary(args)
 
-            self.assertEqual(args.output_dir, str(summary_path.parent))
             self.assertEqual(args.log_file, str(log_path))
+            output_dir = _pipeline_common.resolve_default_output_dir(args)
+            self.assertEqual(output_dir, _pipeline_common.resolve_default_output_dir(args))
+            self.assertIn("lthr-multi-sample-report", output_dir)
+            self.assertIn(summary_path.stem, output_dir)
 
     def test_configure_case_routing_defaults_base_steps(self) -> None:
         old_detect = _pipeline_common.detect_log_cases

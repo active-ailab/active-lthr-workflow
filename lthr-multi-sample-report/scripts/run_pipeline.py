@@ -52,13 +52,13 @@ import argparse
 import sys
 
 from _pipeline_common import (
-    DATA_DIR,
     SCRIPTS,
     apply_config_defaults,
     auto_detect_json_file,
     configure_case_routing,
     extract_sdk_version,
     parse_steps,
+    resolve_default_output_dir,
     resolve_offline_summary,
 )
 from base_steps import BASE_STEP_HANDLERS, step_10_notify
@@ -85,7 +85,7 @@ def main():
     parser.add_argument("--json", dest="json_file", help="样本 JSON 数据文件路径")
     parser.add_argument("--offline-summary", help="lthr-offline-simulator 多样本 summary JSON 路径")
     parser.add_argument("--case", default="BASE_CASE", help="日志解析过滤 case (默认 BASE_CASE)")
-    parser.add_argument("--output-dir", help="报告与中间 JSON 输出目录，默认 DATA_DIR；传 --offline-summary 时默认跟随 summary 所在目录")
+    parser.add_argument("--output-dir", help="报告与中间 JSON 输出目录，默认系统临时目录下按输入文件生成的稳定任务目录")
 
     # 飞书 Base
     parser.add_argument("--base-token", help="飞书 Base token")
@@ -123,6 +123,10 @@ def main():
             args.sdk_ver = extract_sdk_version(args.log_file)
         if not args.sdk_ver:
             parser.error("请指定 --sdk-ver，或提供 --log-file 以自动提取")
+
+    if not args.output_dir:
+        args.output_dir = resolve_default_output_dir(args)
+        print(f"[输出] 默认报告目录: {args.output_dir}")
 
     configure_case_routing(args, steps_explicit=steps_explicit)
 

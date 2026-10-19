@@ -73,7 +73,9 @@ python3 scripts/run_pipeline.py \
   --offline-summary /tmp/lthr_multi_sim/device_multi_sim_20260512_101530.json
 ```
 
-说明：传 `--offline-summary` 时，pipeline 会优先读取 summary 里的 `artifacts.log_path` 作为解析输入，且默认把中间 JSON 和报告输出到该 summary 所在目录；这样多样本仿真和报告产物会落在同一处，无需再手工搬运日志。
+说明：传 `--offline-summary` 时，pipeline 会优先读取 summary 里的 `artifacts.log_path` 作为解析输入。报告和中间 JSON 默认写入系统临时目录下按 summary 文件名生成的稳定任务目录，例如 `/tmp/lthr-multi-sample-report/summary_device_multi_sim_<stamp>_<hash>/`；重复使用同一个输入时会复用该目录，便于分阶段生成和发布。可用 `--output-dir` 指定其他位置。
+
+说明：未传 `--output-dir` 时，`data_sample/` 仍作为自动查找已有样本 JSON/Base JSON 的备用输入目录，不再作为新报告和中间 JSON 的默认输出位置。
 
 说明：`--offline-summary` 模式下，如果没有显式传 `--steps`，pipeline 会先扫描 raw log 中的 `CASE=BASE_CASE` / `CASE=JIRA_CASE`：
 
@@ -227,15 +229,15 @@ BASE CASE 用步骤 1-10，JIRA CASE 用步骤 11-14。
 |------|------|
 | 日志 | `framework/engine/sportEngine/alg_gomore/data_sample/` |
 | offline-simulator 多样本摘要 | `device_multi_sim_<stamp>.json` |
-| 样本 JSON | `data_sample/base_case_updates_*.json` |
-| 三源报告 | `data_sample/garmin_dut_sim_compare_report_*.md` |
-| 仿真报告 | `data_sample/sdk_*_sim_report.md` |
-| 版本对比 | `data_sample/sdk_*_vs_*_compare_report.md` |
-| JIRA 样本 JSON | `data_sample/jira_samples_<sdk_ver>.json` |
-| JIRA 基准 JSON | `data_sample/jira_baseline_<sdk_ver>.json` |
-| JIRA 对比报告 | `data_sample/jira_compare_report_<sdk_ver>.md` |
+| 输入样本 JSON | Lyon 项目的 `data_sample/`（自动搜索备用目录） |
+| 样本 JSON | 默认任务输出目录下的 `samples_*.json` / `base_data_*.json` |
+| 三源报告 | 默认任务输出目录下的 `garmin_dut_sim_compare_report_*.md` |
+| 仿真报告 | 默认任务输出目录下的 `sdk_*_sim_report.md` |
+| 版本对比 | 默认任务输出目录下的 `sdk_*_vs_*_compare_report.md` |
+| JIRA 样本 / 基准 JSON | 默认任务输出目录下的 `jira_samples_*.json` / `jira_baseline_*.json` |
+| JIRA 对比报告 | 默认任务输出目录下的 `jira_compare_report_*.md` |
 
-使用 `--offline-summary` 时，上述 `samples_*.json` / `base_data_*.json` / `sdk_*_sim_report.md` 会默认输出到 summary 同目录；不传时仍保持原来的 `data_sample/` 默认行为。
+使用 `--offline-summary` 时，上述 `samples_*.json` / `base_data_*.json` / `sdk_*_sim_report.md` 默认输出到系统临时目录下按 summary 文件名生成的稳定任务目录。其他输入按输入类型和文件名生成对应目录。自动查找输入 JSON 时优先搜索输出目录，再回退搜索 Lyon 项目的 `data_sample/`；显式传入 `--output-dir` 时，输出目录和首选搜索目录都使用该路径。
 
 在 `BASE_CASE + JIRA_CASE` 混合日志场景下，推荐直接用 `--offline-summary` 且不传 `--steps`，让 pipeline 自动串起两套报告；只有在你明确只想跑其中一侧时，才显式写 `--steps 1-10` 或 `--steps 11-14`。
 
