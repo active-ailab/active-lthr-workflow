@@ -94,7 +94,7 @@ python3 scripts/run_lthr_offline_sim.py <ISSUE_KEY> --csv-path /tmp/s.csv --skip
 - 运行时错误码：`references/runtime_error_codes.md`
 - 统一摘要结构：`references/summary_schema.md`
 
-签名格式同 Jira 评论签名（`（by {model} | reasoning={effort}）`），自动从环境变量或 `~/.codex/config.toml` 读取。
+报告签名格式为 `（by {model} | reasoning={effort}）`，自动从环境变量或 `~/.codex/config.toml` 读取。Jira 评论固定包含仿真样本与结果摘要，不包含模型签名、Issue 行或标题行。
 
 ---
 

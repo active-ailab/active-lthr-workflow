@@ -45,7 +45,7 @@ def build_comment(
     issue_meta: Dict[str, str],
     sample_summaries: List[Dict[str, object]],
     artifact_names: Sequence[str],
-    signature: str,
+    _signature: str,
 ) -> str:
     lines: List[str] = []
     for sample in sample_summaries:
@@ -78,13 +78,9 @@ def build_comment(
             lines.append(f"    序列: [{lt_series_str}]")
             lines.append(f"  - 【mh 趋势】: {trend['mh']['trend']} (slope={trend['mh']['slope']})")
             lines.append(f"    mean={trend['mh']['mean']:.1f}, range=[{trend['mh']['min']:.0f}~{trend['mh']['max']:.0f}]")
-    issue_line = f"* Issue: [{issue_meta['key']}|{issue_meta['link']}]" if issue_meta.get("link") else f"* Issue: {issue_meta['key']}"
     return _render_asset_template(
         "jira_comment_template.md",
         {
-            "signature_block": _format_signature_block(signature),
-            "issue_line": f"{issue_line}\n",
-            "title_line": f"* 标题: {issue_meta['title']}\n" if issue_meta.get("title") else "",
             "sample_count": len(sample_summaries),
             "sample_lines": ("\n".join(lines) + "\n") if lines else "",
             "attachment_line": f"* 附件: {', '.join(artifact_names)}\n" if artifact_names else "",

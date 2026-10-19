@@ -32,9 +32,6 @@
 
 ### jira_comment_template.md
 
-- `signature_block`: 可选签名块，已包含换行
-- `issue_line`: Issue 行，已包含换行
-- `title_line`: 可选标题行，已包含换行
 - `sample_count`: 样本数量
 - `sample_lines`: 每个样本的摘要块
 - `attachment_line`: 可选附件行，已包含换行

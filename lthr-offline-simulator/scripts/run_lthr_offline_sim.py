@@ -84,8 +84,8 @@ def main() -> None:
     parser.add_argument("--deploy-attempts", type=int, default=3, help="Retry count for mount/copy/unmount deployment before UART utest")
     parser.add_argument("--deploy-only", action="store_true", help="Only verify mount/cleanup/copy/unmount deployment, skip UART utest")
     parser.add_argument("--no-comment", action="store_true", help="Do not post Jira comment")
-    parser.add_argument("--model-name", default="", help="Model name for Jira comment signature")
-    parser.add_argument("--reasoning-effort", default="", help="Reasoning effort for Jira comment signature")
+    parser.add_argument("--model-name", default="", help="Model name for report signature")
+    parser.add_argument("--reasoning-effort", default="", help="Reasoning effort for report signature")
     args = parser.parse_args()
 
     if not args.deploy_only and args.runs <= 0:
