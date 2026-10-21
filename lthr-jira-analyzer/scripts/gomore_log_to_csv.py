@@ -39,6 +39,7 @@ import json
 
 CTX_BACK = 200
 CTX_FWD = 500
+DEFAULT_USERINFO = '38.0,1.0,173.0,65.0,-1.0,60.0,-1.0'
 
 # 匹配器
 RE_UTC = re.compile(r"utcTimeStamp\s*[:=]\s*(\d{9,12})", re.IGNORECASE)
@@ -804,7 +805,7 @@ JSON 输出（--json）示例：
     parser.add_argument('infile', help='input log file path or - for stdin')
     parser.add_argument('outfile', nargs='?', default='', help='output file or directory (optional)')
     parser.add_argument('-s', '--sport-type', type=int, default=31, help='运动类型数值，默认为31')
-    parser.add_argument('-u', '--user-info', default='38.0,1.0,173.0,65.0,-1.0,60.0,-1.0', help='用户信息CSV字符串，示例: "38.0,1.0,173.0,65.0,-1.0,60.0,-1.0"')
+    parser.add_argument('-u', '--user-info', default=DEFAULT_USERINFO, help='用户信息CSV字符串，示例: "38.0,1.0,173.0,65.0,-1.0,60.0,-1.0"')
     parser.add_argument('--json', action='store_true', help='输出结果为 JSON 到 stdout (machine-readable)')
     parser.add_argument('--debug', action='store_true', help='打印诊断信息用于调试（事件计数、对覆盖等）')
     norm_argv = normalize_cli_argv(sys.argv[1:])
@@ -814,6 +815,10 @@ JSON 输出（--json）示例：
     outfile = args.outfile
     sport_type_arg = args.sport_type
     userinfo_arg = args.user_info
+    userinfo_arg_explicit = any(
+        arg in ('-u', '--user-info') or arg.startswith('--user-info=')
+        for arg in norm_argv
+    )
     json_out = args.json
     debug = args.debug
 
@@ -842,6 +847,11 @@ JSON 输出（--json）示例：
     # 试着从旧日志或 ALG_GM c 字段解析 userInfo（优先于后续输出分支）
     parsed_userinfo = extract_userinfo_from_old_log(content)
     userinfo_found = bool(parsed_userinfo)
+    global_userinfo_source = (
+        '整份日志其他位置（回退）' if parsed_userinfo
+        else '命令行 --user-info 参数' if userinfo_arg_explicit
+        else f'脚本默认值（{DEFAULT_USERINFO}）'
+    )
     if parsed_userinfo:
         userinfo_arg = parsed_userinfo
         if debug:
@@ -893,9 +903,10 @@ JSON 输出（--json）示例：
                 print(f"[DEBUG] Segment #{idx}: start={start_pos} end={end_pos} rtc={rtc_anchor} tz={tz_anchor} time_anchor={time_anchor_pos} rows_in_seg={len(seg)} algs_in_seg={len(algs_in_seg)}", flush=True)
             total_covered += len(seg)
             sample_userinfo = extract_userinfo_in_range(content, start_pos, end_pos)
-            sample_userinfo_found = bool(sample_userinfo)
+            sample_userinfo_source = '该运动段关联日志范围（含前序上下文）' if sample_userinfo else global_userinfo_source
             if not sample_userinfo:
                 sample_userinfo = userinfo_arg
+            sample_userinfo_found = not sample_userinfo_source.startswith('脚本默认值')
 
             # 关键修正：每个分段独立校正时间，避免第二段起点受第一段影响
             normalize_segment_timestamps(
@@ -939,6 +950,7 @@ JSON 输出（--json）示例：
                 'index': idx,
                 'userInfo': userinfo_list,
                 'userInfoFound': sample_userinfo_found,
+                'userInfoSource': sample_userinfo_source,
                 'alg_gm': alg_entry,
                 'csv': outpath,
                 'rows': len(tuples),
@@ -953,7 +965,8 @@ JSON 输出（--json）示例：
                 print('\n' + '='*40, flush=True)
                 print(f'Result #{idx}', flush=True)
                 print('-' * 40, flush=True)
-                print(f'UserInfo: {userinfo_arg}', flush=True)
+                print(f'UserInfo: {sample_userinfo}', flush=True)
+                print(f'UserInfo source: {sample_userinfo_source}', flush=True)
                 if alg_entry:
                     lt = alg_entry.get('ltSpeed')
                     pace = convert_speed_to_pace_str(lt) if lt is not None else '-'
@@ -1082,9 +1095,10 @@ JSON 输出（--json）示例：
                 print(f"[DEBUG] segment #{idx} has {len(seg)} rows; first pos={seg[0]['pos']}, first_utc={seg[0]['utc']}", flush=True)
             segments_covered += len(seg)
             sample_userinfo = extract_userinfo_in_range(content, seg[0]['pos'], seg[-1]['pos'] + 1)
-            sample_userinfo_found = bool(sample_userinfo)
+            sample_userinfo_source = '该运动段关联日志范围（含前序上下文）' if sample_userinfo else global_userinfo_source
             if not sample_userinfo:
                 sample_userinfo = userinfo_arg
+            sample_userinfo_found = not sample_userinfo_source.startswith('脚本默认值')
             normalize_segment_timestamps(seg)
             first_utc = seg[0]['utc']
             outpath, _resolved_name_ts = allocate_output_csv_path(
@@ -1121,6 +1135,7 @@ JSON 输出（--json）示例：
                 'index': idx,
                 'userInfo': userinfo_list,
                 'userInfoFound': sample_userinfo_found,
+                'userInfoSource': sample_userinfo_source,
                 'alg_gm': alg_entry,
                 'csv': outpath,
                 'rows': len(tuples),
@@ -1135,7 +1150,8 @@ JSON 输出（--json）示例：
                 print(f'Result #{idx}', flush=True)
                 print('-' * 40, flush=True)
                 # user info
-                print(f'UserInfo: {userinfo_arg}', flush=True)
+                print(f'UserInfo: {sample_userinfo}', flush=True)
+                print(f'UserInfo source: {sample_userinfo_source}', flush=True)
                 # ALG_GM outputs (if found)
                 if alg_result:
                     lt = alg_result.get('ltSpeed')
@@ -1180,9 +1196,10 @@ JSON 输出（--json）示例：
     outfile = os.path.abspath(outfile)
     tuples = rows_with_active_timestamps(rows, content, input_name)
     single_userinfo = extract_userinfo_in_range(content, 0, len(content))
-    single_userinfo_found = bool(single_userinfo)
+    single_userinfo_source = '本次解析日志范围' if single_userinfo else global_userinfo_source
     if not single_userinfo:
         single_userinfo = userinfo_arg
+    single_userinfo_found = not single_userinfo_source.startswith('脚本默认值')
     try:
         write_csv(tuples, outfile, sport_type=sport_type_arg, userinfo=single_userinfo)
     except Exception as e:
@@ -1205,6 +1222,7 @@ JSON 输出（--json）示例：
         'index': 1,
         'userInfo': userinfo_list,
         'userInfoFound': single_userinfo_found,
+        'userInfoSource': single_userinfo_source,
         'alg_gm': alg_list,
         'csv': outfile,
         'rows': len(tuples),
@@ -1220,6 +1238,7 @@ JSON 输出（--json）示例：
         print('Result #1', flush=True)
         print('-' * 40, flush=True)
         print(f'UserInfo: {userinfo_arg}', flush=True)
+        print(f'UserInfo source: {single_userinfo_source}', flush=True)
         if alg_results:
             for i, r in enumerate(alg_results, start=1):
                 pace = convert_speed_to_pace_str(r.get('ltSpeed')) if r.get('ltSpeed') is not None else '-'

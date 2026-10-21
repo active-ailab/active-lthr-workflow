@@ -146,6 +146,7 @@ def analyze_log_fit_sources(source_script, log_files, fit_files, analysis_dir):
             "csv": sample.get("csv"),
             "rows": sample.get("rowCount"),
             "userInfo": user_info,
+            "userInfoSource": sample.get("userInfoSource"),
             "alg_gm": sample.get("alg"),
             "filename": sample.get("filename"),
             "sources": sample.get("sources", []),
@@ -267,8 +268,13 @@ def build_comment(issue_meta, source_txt, parse_json, signature, root_work_dir=N
         activity_time = format_activity_time(r)
         lines.append("")
         lines.append(f"运动{i}（{activity_time}）")
+        user_info_source = r.get("userInfoSource")
+        if user_info_source:
+            lines.append(f"用户信息来源：{user_info_source}")
+        elif r.get("userInfoFound") is False:
+            lines.append("用户信息来源：回退值，具体来源未记录")
 
-        if r.get("userInfoFound") is False or not has_any_user_info(r.get("userInfo")):
+        if not has_any_user_info(r.get("userInfo")):
             lines.append("未检索到用户信息数据，无法分析")
             continue
 

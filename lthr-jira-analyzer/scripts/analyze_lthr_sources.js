@@ -39,6 +39,7 @@ const output = result.results.map((sample, index) => {
     logOnlyCount: sample.logOnlyCount,
     statusFilteredCount: sample.statusFilteredCount,
     userInfo: sample.userInfo,
+    userInfoSource: sample.userInfoSource,
     alg: sample.alg,
     sdkVersion: sample.sdkVersion,
     startTime: sample.startTime,
