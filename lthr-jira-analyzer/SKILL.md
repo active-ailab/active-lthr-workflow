@@ -1,6 +1,8 @@
 ---
 name: lthr-jira-analyzer
 description: 分析乳酸阈值 log/FIT 数据并回传 Jira。适用于单个 Jira 问题或批量问题：检查并融合 log 与 FIT（按有效来源回退）、校验时间戳和运动状态、生成口径一致的 CSV/SVG；必要时下载并解压附件、上传分析结果并写精简 Jira 评论；批量模式额外生成每个 Jira 的单问题描述总结报告。
+owner: cs-dongqi@zepp.com
+organization: Active.Bu
 ---
 
 # LTHR Jira Analyzer
@@ -98,7 +100,7 @@ GoMore 乳酸阈（LTHR）算法**仅在以下运动类型下生效**：
 
 ## 标准流程
 
-1. 读取 Jira 元信息与附件列表，分别检查 log/txt、FIT 和 ZIP；附件不足时按现有流程下载并解压。
+1. 读取 Jira 附件列表并下载附件，递归解压 ZIP。日志先匹配文件名以 `mili`、`ios` 或 `amazfit` 开头且后缀为 `.log` / `.txt` 的文件；若一个也没找到，则兜底选取任意文件名的 `.log` / `.txt` 文件（文件名大小写不敏感），但排除 `hmble_log.log`。日志按文件内容 SHA-256 去重。FIT 按 `.fit` 后缀查找。
 2. 如果存在 log 和 FIT，确认它们对应同一次运动并融合；仅有一类数据时以该来源生成 CSV。FIT 应按运动 session 的真实开始时间与 log 对应，不使用 FIT `time_created` 代替运动开始时间。
 3. 对融合样本执行“Log/FIT 融合与运动状态有效性”规则，并在生成 CSV 前完成时间戳对照；不得在无法确认对应关系时静默合并。
 4. 默认从同一份处理后样本生成 CSV 和 `*_hr_speed.svg`；SVG 应保留所有运动中样本，并从运动时间轴中扣除被跳过的非运动区间。使用 `--no-plot` 时跳过 SVG 生成与上传。

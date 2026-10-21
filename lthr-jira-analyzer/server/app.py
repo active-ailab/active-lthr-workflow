@@ -311,20 +311,25 @@ def file_sha256(path):
 
 
 def find_target_files(root):
-    logs = []
+    preferred_logs = []
+    fallback_logs = []
     fits = []
-    seen_log_hashes = set()
+    seen_preferred_hashes = set()
+    seen_fallback_hashes = set()
 
     def collect(path):
         if not path.is_file():
             return
         name = path.name.lower()
         suffix = path.suffix.lower()
-        if suffix in (".log", ".txt") and name.startswith(("mili", "ios", "amazfit")):
+        if suffix in (".log", ".txt") and name != "hmble_log.log":
             digest = file_sha256(path)
-            if digest not in seen_log_hashes:
-                seen_log_hashes.add(digest)
-                logs.append(path)
+            if digest not in seen_fallback_hashes:
+                seen_fallback_hashes.add(digest)
+                fallback_logs.append(path)
+            if name.startswith(("mili", "ios", "amazfit")) and digest not in seen_preferred_hashes:
+                seen_preferred_hashes.add(digest)
+                preferred_logs.append(path)
         elif suffix == ".fit":
             fits.append(path)
 
@@ -338,7 +343,9 @@ def find_target_files(root):
     if expanded_root.exists():
         for path in sorted(expanded_root.rglob("*")):
             collect(path)
-    return logs, fits
+    # Prefer known device-name prefixes. If none exist on the issue, fall back
+    # to other .log/.txt files because device names vary across products.
+    return preferred_logs or fallback_logs, fits
 
 
 def build_file_session(issue_key, work_root, jira_session, owner_token):
@@ -351,7 +358,7 @@ def build_file_session(issue_key, work_root, jira_session, owner_token):
     archive_count = expand_archives(work_root)
     logs, fits = find_target_files(work_root)
     if not logs:
-        raise ServiceError(404, "NO_TARGET_LOGS", "No MILI/ios/Amazfit .log or .txt files were found", {
+        raise ServiceError(404, "NO_TARGET_LOGS", "No eligible .log or .txt files were found", {
             "jiraAttachmentCount": attachment_count,
             "zipArchiveCount": archive_count,
             "feedbackFallback": "not_implemented",

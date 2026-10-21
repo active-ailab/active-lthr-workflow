@@ -5,6 +5,8 @@ Organization: Active.Bu
 
 The service accepts a Jira server address, username, and password from the browser, signs in through Jira's cookie-based session endpoint, and uses that session to retrieve issue attachments. ZIP files are expanded recursively; matching logs and FIT files are then made available directly to the browser analyzer. Log parsing and CSV generation remain in the browser.
 
+Log discovery prefers `.log` and `.txt` files whose names start with `mili`, `ios`, or `amazfit` (case-insensitive). If no preferred log is found, it falls back to all `.log` and `.txt` files, excluding the exact name `hmble_log.log`. Logs with identical contents are deduplicated by SHA-256. FIT discovery uses the `.fit` suffix.
+
 The Jira password is sent to this service only for login and is not saved. The service keeps the Jira session cookie in memory for up to eight hours. The browser keeps an opaque service session token in `sessionStorage`. The “记住登录信息” checkbox saves only the Jira address and username in browser `localStorage`. Restarting the service clears active sessions.
 
 This login method works when the Jira instance permits username/password cookie authentication. Jira accounts that require SSO or two-step verification may need a different authentication flow. Jira and its administrator control which methods are available.
