@@ -13,6 +13,7 @@ window.addEventListener('pageshow', (event) => {
 });
 
 const selectedFiles = { log: [], fit: [] };
+const hasAnyFiles = () => selectedFiles.log.length > 0 || selectedFiles.fit.length > 0;
 const acceptedExtensions = { log: ['.log', '.txt'], fit: ['.fit'] };
 const uploadMessage = document.querySelector('.upload-message');
 const analyzeButton = document.querySelector('#analyze-button') || document.querySelector('.primary-button');
@@ -67,7 +68,7 @@ function renderFileList(type) {
     remove.addEventListener('click', () => {
       selectedFiles[type].splice(index, 1);
       renderFileList(type);
-      analyzeButton.disabled = selectedFiles.log.length === 0;
+      analyzeButton.disabled = !hasAnyFiles();
       clearAnalysisResults();
       uploadMessage.textContent = '文件已从本次选择中移除。';
     });
@@ -92,7 +93,7 @@ function addFiles(type, files) {
     added += 1;
   }
   renderFileList(type);
-  analyzeButton.disabled = selectedFiles.log.length === 0;
+  analyzeButton.disabled = !hasAnyFiles();
   if (added) {
     clearAnalysisResults();
     uploadMessage.textContent = `已选择 ${selectedFiles.log.length} 份日志和 ${selectedFiles.fit.length} 份 FIT 文件。`;
@@ -322,8 +323,27 @@ function renderResults(data) {
     if (!result.userInfo) {
       const missing = document.createElement('p');
       missing.className = 'analysis-warning';
-      missing.textContent = '未检索到用户信息数据，无法分析';
+      missing.textContent = '未检索到用户信息数据，仅生成运动数据 CSV，无法计算用户相关估值';
       card.append(cardHeader, missing);
+      const sourceNote = document.createElement('p');
+      sourceNote.className = 'result-meta';
+      const fusion = result.matchRate === null || result.matchRate === undefined
+        ? '单源数据'
+        : `log/FIT 时间戳匹配 ${result.matchRate}%（FIT 独有 ${result.fitOnlyCount ?? 0} 点，log 独有 ${result.logOnlyCount ?? 0} 点）`;
+      sourceNote.textContent = `${fusion}；明确非运动状态跳过 ${result.statusFilteredCount ?? 0} 点；运动中的非法 HR/速度保留为 CSV 255/0，SVG 按 0 绘制。`;
+      card.append(sourceNote);
+      if (result.csv && result.filename) {
+        const download = document.createElement('a');
+        download.className = 'download-button';
+        download.textContent = '下载 CSV ↓';
+        download.download = result.filename;
+        download.href = URL.createObjectURL(new Blob([`\uFEFF${result.csv}`], { type: 'text/csv;charset=utf-8' }));
+        const fileRow = document.createElement('div');
+        fileRow.className = 'result-file-row';
+        filename.textContent = result.filename;
+        fileRow.append(filename, download);
+        card.append(fileRow);
+      }
     } else {
       const values = result.userInfo.split(',').map(Number);
       const fields = [
@@ -349,6 +369,12 @@ function renderResults(data) {
       fileRow.className = 'result-file-row';
       filename.textContent = result.filename;
       fileRow.append(filename, download);
+      const sourceNote = document.createElement('p');
+      sourceNote.className = 'result-meta';
+      const fusion = result.matchRate === null || result.matchRate === undefined
+        ? '单源数据'
+        : `log/FIT 时间戳匹配 ${result.matchRate}%（FIT 独有 ${result.fitOnlyCount ?? 0} 点，log 独有 ${result.logOnlyCount ?? 0} 点）`;
+      sourceNote.textContent = `${fusion}；暂停、预开启、结束、校准等明确非运动状态跳过 ${result.statusFilteredCount ?? 0} 点。运动中的非法 HR/速度仍保留：CSV 分别使用 255/0，SVG 按 0 绘制。`;
       const summary = document.createElement('div');
       summary.className = 'gomore-summary';
       const summaryTitle = document.createElement('h4');
@@ -446,7 +472,7 @@ function renderResults(data) {
         }
         summary.append(evidence);
       }
-      card.append(cardHeader, userInfo, fileRow, summary);
+      card.append(cardHeader, userInfo, fileRow, sourceNote, summary);
       const estimate = document.createElement('section');
       estimate.className = 'estimate-card';
       const estimateTitle = document.createElement('h4');
@@ -519,7 +545,7 @@ function renderResults(data) {
 }
 
 function finishAnalysis(data) {
-  analyzeButton.disabled = selectedFiles.log.length === 0;
+  analyzeButton.disabled = !hasAnyFiles();
   analyzeButton.innerHTML = '开始分析 <span>→</span>';
   if (data.error) {
     uploadMessage.textContent = data.error;
@@ -529,13 +555,13 @@ function finishAnalysis(data) {
 }
 
 function failAnalysis() {
-  analyzeButton.disabled = selectedFiles.log.length === 0;
+  analyzeButton.disabled = !hasAnyFiles();
   analyzeButton.innerHTML = '开始分析 <span>→</span>';
   uploadMessage.textContent = '分析失败，请检查文件格式后重试。';
 }
 
 analyzeButton.addEventListener('click', async () => {
-  if (!selectedFiles.log.length) return;
+  if (!hasAnyFiles()) return;
   analyzeButton.disabled = true;
   analyzeButton.textContent = '正在分析…';
   uploadMessage.textContent = '正在浏览器内解析日志和 FIT 文件，请稍候。';
@@ -549,7 +575,7 @@ analyzeButton.addEventListener('click', async () => {
         try {
           finishAnalysis(window.LTHRAnalyzer.analyze({ logs, fits }));
         } catch (error) {
-          analyzeButton.disabled = selectedFiles.log.length === 0;
+          analyzeButton.disabled = !hasAnyFiles();
           analyzeButton.innerHTML = '开始分析 <span>→</span>';
           uploadMessage.textContent = `分析失败：${error.message}`;
         }
@@ -572,7 +598,7 @@ analyzeButton.addEventListener('click', async () => {
     const transfer = [...logs, ...fits].map((file) => file.buffer);
     worker.postMessage({ logs, fits }, transfer);
   } catch (error) {
-    analyzeButton.disabled = selectedFiles.log.length === 0;
+    analyzeButton.disabled = !hasAnyFiles();
     analyzeButton.innerHTML = '开始分析 <span>→</span>';
     uploadMessage.textContent = `读取文件失败：${error.message}`;
   }

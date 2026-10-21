@@ -11,9 +11,10 @@ import os
 
 PIXELS_PER_5_MINUTES, HEIGHT = 250, 780
 LEFT, RIGHT, TOP, BOTTOM = 88, 110, 82, 115
+MAX_BRIDGED_GAP_SECONDS = 3
 
 
-def load_data(path):
+def load_data(path, pause_intervals=()):
     points = []
     with open(path, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
@@ -22,13 +23,20 @@ def load_data(path):
             raise ValueError("CSV must contain TIMESTAMP, HR and SPEED")
         for row in reader:
             ts = int(float(row["TIMESTAMP"]))
+            if any(start <= ts <= end for start, end in pause_intervals):
+                continue
             tz = int(float(row.get("timeZoneOffset") or 0))
             local = datetime.utcfromtimestamp(ts) + timedelta(minutes=tz)
+            active_value = row.get("ACTIVE_TIMESTAMP")
+            if active_value not in (None, ""):
+                active_ts = int(float(active_value))
+            else:
+                active_ts = ts - sum(end - start for start, end in pause_intervals if ts > end)
             hr = float(row["HR"])
             speed = float(row["SPEED"])
-            # 255 is the sensor's invalid-HR sentinel; plotting it as a real
-            # value creates a spike and expands the HR axis for the whole chart.
-            points.append((ts, local, hr if 0 <= hr < 255 else None, speed if speed >= 0 else None))
+            # Invalid running samples stay in the series at zero, preserving
+            # their timestamp without producing sentinel spikes.
+            points.append((active_ts, local, hr if 0 <= hr < 255 else 0.0, speed if speed >= 0 else 0.0))
     if not points:
         raise ValueError("CSV contains no data rows")
     return points
@@ -36,14 +44,16 @@ def load_data(path):
 
 def split_polyline(points, value_index, map_x, map_y):
     chunks, current = [], []
+    last_valid_ts = None
     for point in points:
         value = point[value_index]
         if value is None:
-            if current:
-                chunks.append(current)
-                current = []
             continue
+        if current and last_valid_ts is not None and point[0] - last_valid_ts > MAX_BRIDGED_GAP_SECONDS:
+            chunks.append(current)
+            current = []
         current.append(f"{map_x(point[0]):.1f},{map_y(value):.1f}")
+        last_valid_ts = point[0]
     if current:
         chunks.append(current)
     return chunks
@@ -61,18 +71,21 @@ def split_area(points, value_index, map_x, map_y, baseline_y):
         path.extend((f"L {coords[-1][0]:.1f} {baseline_y:.1f}", "Z"))
         areas.append(" ".join(path))
 
+    last_valid_ts = None
     for point in points:
         if point[value_index] is None:
+            continue
+        if current and last_valid_ts is not None and point[0] - last_valid_ts > MAX_BRIDGED_GAP_SECONDS:
             append_area(current)
             current = []
-        else:
-            current.append(point)
+        current.append(point)
+        last_valid_ts = point[0]
     append_area(current)
     return areas
 
 
-def render(csv_path, output):
-    points = load_data(csv_path)
+def render(csv_path, output, pause_intervals=()):
+    points = load_data(csv_path, pause_intervals)
     ts0, ts1 = points[0][0], points[-1][0]
     if ts1 <= ts0:
         ts1 = ts0 + 1
@@ -137,13 +150,12 @@ def render(csv_path, output):
     for color, value_index, mapper in series:
         for chunk in split_polyline(points, value_index, map_x, mapper):
             lines.append(f'<polyline points="{" ".join(chunk)}" fill="none" stroke="{color}" stroke-width="2.0" stroke-linecap="round" stroke-linejoin="round"/>')
-    invalid_hr = sum(p[2] is None for p in points)
-    invalid_speed = sum(p[3] is None for p in points)
-    # Count the sentinel in the source data even though it is excluded from the curve.
+    invalid_hr = sum(p[2] == 0 for p in points)
+    invalid_speed = sum(p[3] == 0 for p in points)
     with open(csv_path, newline="", encoding="utf-8-sig") as f:
         hr_255 = sum(float(row["HR"]) == 255 for row in csv.DictReader(f))
     lines += [
-        f'<text class="small" x="{LEFT}" y="{HEIGHT - 25}">rows={len(points)}; HR invalid={invalid_hr}; HR=255={hr_255}; Speed invalid={invalid_speed}</text>',
+        f'<text class="small" x="{LEFT}" y="{HEIGHT - 25}">rows={len(points)}; HR plotted at 0={invalid_hr}; HR=255={hr_255}; Speed plotted at 0={invalid_speed}</text>',
         '</svg>',
     ]
     with open(output, "w", encoding="utf-8", newline="\n") as f:
@@ -155,9 +167,10 @@ def main():
     parser = argparse.ArgumentParser(description="Generate GoMore HR/SPEED SVG")
     parser.add_argument("csv")
     parser.add_argument("-o", "--output")
+    parser.add_argument("--pause-interval", nargs=2, type=int, action="append", default=[], metavar=("START", "END"), help="Inclusive Unix timestamp range omitted from data and chart duration")
     args = parser.parse_args()
     output = args.output or os.path.splitext(args.csv)[0] + "_hr_speed.svg"
-    render(args.csv, output)
+    render(args.csv, output, args.pause_interval)
 
 
 if __name__ == "__main__":

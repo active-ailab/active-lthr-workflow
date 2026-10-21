@@ -242,8 +242,11 @@ def parse_log(content: str) -> List[dict]:
                 utc = last_utc + 1
         last_utc = utc
 
-        # 将 hr 转为整数（CSV 样例通常为整数），若为 -1.0 保持 -1
-        hr_int = int(hr) if hr >= 0 else -1
+        # Keep the running sample and encode invalid GoMore input values with
+        # the CSV sentinels consumed by the offline simulator.
+        hr_int = int(hr) if 0 <= hr < 255 else 255
+        if speed < 0:
+            speed = 0.0
         rows.append({'pos': pos, 'utc': utc, 'raw_utc': utc, 'tz': tz, 'hr': hr_int, 'speed': speed})
 
     return rows
@@ -510,12 +513,14 @@ def write_csv(rows: List[Tuple[int,int,int,float]], out_path: str, sport_type: i
             'ppgLength', 'accLength', 'Longitude', 'Latitude', 'Altitude', 'gpsSpeed', 'gpsAccuracy',
             'HR', 'SPEED', 'wristOff', 'speedSourceOut', 'speedOut', 'updateIndexRet',
             'StartInput.workoutType', 'StartInput.rtc', 'userInfo', 'EndInput.workoutDate',
-            'EndOutput.pace0', 'EndOutput.pace1', 'EndOutput.hrEstorOut'
+            'EndOutput.pace0', 'EndOutput.pace1', 'EndOutput.hrEstorOut', 'ACTIVE_TIMESTAMP'
         ])
 
         # 默认 userInfo 和结束字段
         default_userinfo = userinfo
-        for utc, tz, hr, speed in rows:
+        for item in rows:
+            utc, tz, hr, speed = item[:4]
+            active_utc = item[4] if len(item) > 4 else utc
             date_time = _format_date_time(utc, tz)
             # default values to mimic sample file
             ppg1 = -1.0
@@ -526,11 +531,8 @@ def write_csv(rows: List[Tuple[int,int,int,float]], out_path: str, sport_type: i
             longitude = latitude = altitude = -1.0
             gpsSpeed = -1.0
             gpsAccuracy = -1.0
-            hr_field = hr if hr >= 0 else -1
-            if speed == -1.0:
-                speed_field = -1.00
-            else:
-                speed_field = float('{:.2f}'.format(speed))
+            hr_field = int(hr) if 0 <= float(hr) < 255 else 255
+            speed_field = float('{:.2f}'.format(speed)) if float(speed) >= 0 else 0.00
             wristOff = 0
             speedSourceOut = -1.0
             speedOut = -1.0
@@ -547,7 +549,7 @@ def write_csv(rows: List[Tuple[int,int,int,float]], out_path: str, sport_type: i
                 longitude, latitude, altitude, gpsSpeed, gpsAccuracy, hr_field, speed_field,
                 wristOff, speedSourceOut, speedOut, updateIndexRet, start_workout_type, start_rtc,
                 default_userinfo, end_workout_date, '{:.2f}'.format(end_pace0),
-                '{:.2f}'.format(end_pace1), '{:.2f}'.format(end_hr_est)
+                '{:.2f}'.format(end_pace1), '{:.2f}'.format(end_hr_est), active_utc
             ])
 
 
@@ -638,6 +640,43 @@ def normalize_segment_timestamps(seg: List[dict], rtc_anchor: int = None,
             rv = last + 1
         r['utc'] = rv
         last = rv
+
+
+def rows_with_active_timestamps(seg, content, input_name, start_pos=0, end_pos=None,
+                                rtc_anchor=None, tz_anchor=None, time_anchor_pos=None):
+    """Return running rows with pauses removed from the chart's active axis."""
+    matches = [m for m in RE_SPRT_GMS.finditer(content, start_pos, end_pos or len(content))]
+    status_rows = []
+    for match in matches:
+        utc, tz, _, _ = extract_fields_around(content, match.start())
+        if utc <= 0:
+            continue
+        status_rows.append({'pos': match.start(), 'utc': utc, 'raw_utc': utc, 'tz': tz,
+                            'state': int(match.group(3))})
+    if status_rows:
+        normalize_segment_timestamps(status_rows, rtc_anchor=rtc_anchor, tz_anchor=tz_anchor,
+                                     content=content, time_anchor_pos=time_anchor_pos,
+                                     input_name=input_name)
+    intervals = []
+    pause_start = None
+    for status in status_rows:
+        if status['state'] != SPRT_GMS_RUNNING_STATE:
+            if pause_start is None:
+                pause_start = status['utc']
+        elif pause_start is not None:
+            if status['utc'] > pause_start:
+                intervals.append((pause_start, status['utc']))
+            pause_start = None
+
+    output = []
+    for row in seg:
+        if any(start <= row['utc'] < end for start, end in intervals):
+            continue
+        paused = sum(max(0, min(row['utc'], end) - start) for start, end in intervals)
+        if pause_start is not None and row['utc'] > pause_start:
+            paused += row['utc'] - pause_start
+        output.append((row['utc'], row['tz'], row['hr'], row['speed'], row['utc'] - paused))
+    return output
 
 
 def split_rows_by_timestamp_jumps(rows: List[dict], min_jump_seconds: int = 300) -> List[List[dict]]:
@@ -872,7 +911,11 @@ JSON 输出（--json）示例：
             outpath, _resolved_name_ts = allocate_output_csv_path(
                 out_dir, base_template, first_utc, used_output_paths, seg[0]['tz'])
 
-            tuples = [(r['utc'], r['tz'], r['hr'], r['speed']) for r in seg]
+            tuples = rows_with_active_timestamps(
+                seg, content, input_name, start_pos=start_pos, end_pos=end_pos,
+                rtc_anchor=rtc_anchor if rtc_anchor else None, tz_anchor=tz_anchor,
+                time_anchor_pos=time_anchor_pos,
+            )
             try:
                 write_csv(tuples, outpath, sport_type=sport_type_arg, userinfo=sample_userinfo)
                 any_written = True
@@ -1046,7 +1089,9 @@ JSON 输出（--json）示例：
             first_utc = seg[0]['utc']
             outpath, _resolved_name_ts = allocate_output_csv_path(
                 out_dir, base_template, first_utc, used_output_paths, seg[0]['tz'])
-            tuples = [(r['utc'], r['tz'], r['hr'], r['speed']) for r in seg]
+            tuples = rows_with_active_timestamps(
+                seg, content, input_name, start_pos=seg[0]['pos'], end_pos=seg[-1]['pos'] + 1,
+            )
             try:
                 write_csv(tuples, outpath, sport_type=sport_type_arg, userinfo=sample_userinfo)
                 any_written = True
@@ -1133,7 +1178,7 @@ JSON 输出（--json）示例：
 
     # Resolve absolute path and write
     outfile = os.path.abspath(outfile)
-    tuples = [(r['utc'], r['tz'], r['hr'], r['speed']) for r in rows]
+    tuples = rows_with_active_timestamps(rows, content, input_name)
     single_userinfo = extract_userinfo_in_range(content, 0, len(content))
     single_userinfo_found = bool(single_userinfo)
     if not single_userinfo:

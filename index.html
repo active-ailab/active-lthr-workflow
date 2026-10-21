@@ -60,13 +60,13 @@
           <section class="upload-panel">
             <div class="panel-heading">
               <div><h2>添加分析文件</h2><p>可添加多份日志和 FIT，系统会按运动开始时间匹配样本。</p></div>
-              <span class="required-label"><i></i>必需文件</span>
+              <span class="required-label"><i></i>日志或 FIT 至少选择一种</span>
             </div>
 
             <div class="upload-grid">
-              <article class="upload-card required-card">
-                <div class="card-top"><div class="file-icon log-icon"><span>TXT</span></div><span class="file-state">必需</span></div>
-                <h3>运动日志 <span class="asterisk">*</span></h3>
+              <article class="upload-card">
+                <div class="card-top"><div class="file-icon log-icon"><span>TXT</span></div><span class="file-state optional">可选</span></div>
+                <h3>运动日志</h3>
                 <p>包含 GoMore 算法处理过程与结果</p>
                 <div class="drop-area" data-upload="log" role="button" tabindex="0" aria-label="选择或拖放日志文件">
                   <input class="file-input" type="file" accept=".log,.txt,text/plain" multiple hidden />
@@ -91,7 +91,7 @@
             </div>
 
             <div class="panel-footer">
-              <div class="upload-tip"><span class="tip-icon">i</span><span class="upload-message" role="status">可选择多份文件；分析在当前浏览器内完成，不会发送到服务器。</span></div>
+              <div class="upload-tip"><span class="tip-icon">i</span><span class="upload-message" role="status">log 与 FIT 按时间戳融合；暂停、预开启、结束、校准等非运动数据跳过。运动中非法值保留，CSV 写入 255/0，SVG 按 0 绘制。分析在当前浏览器内完成。</span></div>
               <button class="primary-button" id="analyze-button" disabled>开始分析 <span>→</span></button>
             </div>
           </section>

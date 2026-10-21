@@ -121,6 +121,42 @@ def find_log_files(root_dir):
     return sorted([p for p in root_dir.rglob("*") if p.is_file() and p.suffix.lower() in exts])
 
 
+def find_fit_files(root_dir):
+    return sorted([p for p in root_dir.rglob("*") if p.is_file() and p.suffix.lower() == ".fit"])
+
+
+def analyze_log_fit_sources(source_script, log_files, fit_files, analysis_dir):
+    node = shutil.which("node")
+    if not node:
+        raise RuntimeError("分析 FIT/log 融合需要 Node.js（页面与命令行共用同一解析器）")
+    args = [node, str(source_script), str(analysis_dir)]
+    args.extend(f"log:{p.resolve()}" for p in log_files)
+    args.extend(f"fit:{p.resolve()}" for p in fit_files)
+    parsed = json.loads(run_cmd(args).stdout)
+    results = []
+    for sample in parsed.get("results", []):
+        user_info = sample.get("userInfo")
+        if isinstance(user_info, str):
+            try:
+                user_info = [float(value) for value in user_info.split(",")]
+            except ValueError:
+                user_info = None
+        results.append({
+            "index": sample.get("index"),
+            "csv": sample.get("csv"),
+            "rows": sample.get("rowCount"),
+            "userInfo": user_info,
+            "alg_gm": sample.get("alg"),
+            "filename": sample.get("filename"),
+            "sources": sample.get("sources", []),
+            "matchRate": sample.get("matchRate"),
+            "fitOnlyCount": sample.get("fitOnlyCount"),
+            "logOnlyCount": sample.get("logOnlyCount"),
+            "statusFilteredCount": sample.get("statusFilteredCount"),
+        })
+    return {"results": results}
+
+
 def run_parser(script_path, log_path, out_dir):
     cmd = [sys.executable, str(script_path), str(log_path), str(out_dir), "--json"]
     p = run_cmd(cmd)
@@ -846,10 +882,11 @@ def resolve_log_files(zepp_cmd, issue_key, base_dir, explicit_log=""):
 
     attachment_names = list_jira_attachments(zepp_cmd, issue_key)
     has_plain_log_in_jira = any(name.lower().endswith((".txt", ".log")) for name in attachment_names)
+    has_fit_in_jira = any(name.lower().endswith(".fit") for name in attachment_names)
     has_zip_in_jira = any(name.lower().endswith(".zip") for name in attachment_names)
 
     # Priority 1: Jira plain text logs (*.txt / *.log)
-    if has_plain_log_in_jira:
+    if has_plain_log_in_jira or has_fit_in_jira:
         download_jira_attachments(zepp_cmd, issue_key, download_dir)
         return _collect_logs_from_download(), "jira_log"
 
@@ -891,7 +928,10 @@ def analyze_one_issue(
     else:
         log_files, source_channel = resolve_log_files(zepp_cmd, issue_key, base_dir, explicit_log=explicit_log)
 
-    if not log_files:
+    source_root = Path(explicit_log).parent if explicit_log else base_dir / "extract"
+    fit_files = find_fit_files(source_root) if source_root.exists() else []
+
+    if not log_files and not fit_files:
         # If Jira path yielded no *.txt/*.log, fallback once via feedback.
         if source_channel in ("jira_log", "jira_zip"):
             download_dir = base_dir / "download_fb"
@@ -916,16 +956,26 @@ def analyze_one_issue(
                     shutil.copy2(f, dest)
             extract_all_nested_zips(extract_dir)
             log_files = find_log_files(extract_dir)
+            fit_files = find_fit_files(extract_dir)
             source_channel = "feedback"
-        if not log_files:
-            raise RuntimeError(f"{issue_key}: No *.txt/*.log found after download/extract")
+        if not log_files and not fit_files:
+            raise RuntimeError(f"{issue_key}: No *.txt/*.log or *.fit found after download/extract")
 
-    source_txt, parse_json = try_parse_with_candidates(parser_script, log_files, analysis_dir)
+    if log_files:
+        source_txt, parse_json = try_parse_with_candidates(parser_script, log_files, analysis_dir)
+    else:
+        source_txt, parse_json = Path(""), {"results": []}
+
+    if fit_files:
+        source_script = Path(__file__).with_name("analyze_lthr_sources.js")
+        parse_json = analyze_log_fit_sources(source_script, log_files, fit_files, analysis_dir)
+        if log_files:
+            source_txt = log_files[0]
     results = parse_json.get("results", [])
     csv_paths = [Path(r.get("csv")) for r in results if r.get("csv")]
 
     # If Jira path has no parse results, fallback to feedback and retry once.
-    if (not results) and source_channel in ("jira_log", "jira_zip") and not explicit_log:
+    if (not results) and not fit_files and source_channel in ("jira_log", "jira_zip") and not explicit_log:
         download_dir = base_dir / "download_fb_retry"
         extract_dir = base_dir / "extract_fb_retry"
         download_feedback_attachments(zepp_cmd, issue_key, download_dir)
@@ -948,8 +998,15 @@ def analyze_one_issue(
                 shutil.copy2(f, dest)
         extract_all_nested_zips(extract_dir)
         fb_log_files = find_log_files(extract_dir)
+        fb_fit_files = find_fit_files(extract_dir)
         if fb_log_files:
             source_txt, parse_json = try_parse_with_candidates(parser_script, fb_log_files, analysis_dir)
+            results = parse_json.get("results", [])
+            csv_paths = [Path(r.get("csv")) for r in results if r.get("csv")]
+            source_channel = "feedback"
+        elif fb_fit_files:
+            source_txt = Path("")
+            parse_json = analyze_log_fit_sources(Path(__file__).with_name("analyze_lthr_sources.js"), [], fb_fit_files, analysis_dir)
             results = parse_json.get("results", [])
             csv_paths = [Path(r.get("csv")) for r in results if r.get("csv")]
             source_channel = "feedback"

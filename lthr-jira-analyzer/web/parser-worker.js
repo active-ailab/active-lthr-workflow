@@ -4,7 +4,7 @@ const CSV_HEADER = [
   'ppgLength', 'accLength', 'Longitude', 'Latitude', 'Altitude', 'gpsSpeed', 'gpsAccuracy',
   'HR', 'SPEED', 'wristOff', 'speedSourceOut', 'speedOut', 'updateIndexRet',
   'StartInput.workoutType', 'StartInput.rtc', 'userInfo', 'EndInput.workoutDate',
-  'EndOutput.pace0', 'EndOutput.pace1', 'EndOutput.hrEstorOut',
+  'EndOutput.pace0', 'EndOutput.pace1', 'EndOutput.hrEstorOut', 'ACTIVE_TIMESTAMP',
 ];
 
 function readFit(buffer, filename) {
@@ -19,6 +19,7 @@ function readFit(buffer, filename) {
   const definitions = new Map();
   const records = [];
   const sessions = [];
+  const timerEvents = [];
   let activity = null;
   let lastTimestamp = null;
   let offset = headerSize;
@@ -114,6 +115,8 @@ function readFit(buffer, filename) {
         timestamp: values.has(253) ? values.get(253) + FIT_EPOCH : null,
         localTimestamp: values.has(5) ? values.get(5) + FIT_EPOCH : null,
       };
+    } else if (globalNumber === 21 && values.get(0) === 0 && values.has(1) && values.has(253)) {
+      timerEvents.push({ timestamp: values.get(253) + FIT_EPOCH, eventType: values.get(1) });
     }
   }
 
@@ -122,6 +125,16 @@ function readFit(buffer, filename) {
   const timezoneSeconds = activity?.timestamp && activity?.localTimestamp
     ? activity.localTimestamp - activity.timestamp : 0;
   const normalizedSessions = sessions.length ? sessions : [{ start: validRecords[0].timestamp, end: validRecords.at(-1).timestamp }];
+  const pauseIntervals = [];
+  let pauseStart = null;
+  for (const event of timerEvents.sort((a, b) => a.timestamp - b.timestamp)) {
+    if ([1, 4, 5, 6].includes(event.eventType)) {
+      if (pauseStart === null) pauseStart = event.timestamp;
+    } else if (event.eventType === 0 && pauseStart !== null) {
+      if (event.timestamp > pauseStart) pauseIntervals.push([pauseStart, event.timestamp]);
+      pauseStart = null;
+    }
+  }
   return normalizedSessions.map((session, index) => {
     const start = session.start ?? validRecords[0].timestamp;
     const end = session.end ?? validRecords.at(-1).timestamp;
@@ -135,6 +148,7 @@ function readFit(buffer, filename) {
       localStart: start + timezoneSeconds,
       timezoneMinutes: Math.round(timezoneSeconds / 60),
       records: sessionRecords,
+      pauseIntervals: pauseIntervals.filter(([a, b]) => b > start && a < end),
     };
   }).filter((session) => session.records.length);
 }
@@ -188,8 +202,9 @@ function findLogSamples(name, content) {
     return profileValues.some((value) => value > 0) ? normalized.join(',') : null;
   }
   const stateMatches = [...content.matchAll(/SPRT_GMS\s+rh\s*=\s*([+-]?[\d.]+)\s*,\s*sd\s*=\s*([+-]?[\d.]+)\s*,\s*state\s*=\s*(\d+)/gi)];
+  const statusEvents = stateMatches.map((match) => ({ position: match.index, state: Number(match[3]), clock: lineClock(content, match.index) }));
   if (stateMatches.length) {
-    stateMatches.filter((match) => Number(match[3]) === 2).forEach((match) => events.push({ position: match.index, hr: Number(match[1]), speed: Number(match[2]), clock: lineClock(content, match.index) }));
+    stateMatches.filter((match) => Number(match[3]) === 2).forEach((match) => events.push({ position: match.index, hr: Number(match[1]), speed: Number(match[2]), clock: lineClock(content, match.index), state: 2 }));
   } else {
     [...content.matchAll(/_processGomoreAlgo/g)].forEach((match) => {
       const context = content.slice(Math.max(0, match.index - 200), Math.min(content.length, match.index + 500));
@@ -245,11 +260,12 @@ function findLogSamples(name, content) {
       vo2MaxHistory,
       maxHrHistory,
     };
-    const typeMatch = content.slice(start.index, Math.min(content.length, start.index + 500)).match(/(?:type|workoutType)\s*=\s*(\d+)/i);
+    const typeContext = content.slice(start.index, Math.min(content.length, start.index + 500));
+    const typeMatch = typeContext.match(/\bworkoutType\s*=\s*(\d+)/i) || typeContext.match(/\btype\s*=\s*(\d+)/i);
     const zoneContext = content.slice(Math.max(0, start.index - 200), Math.min(content.length, start.index + 700));
     const timezoneMatches = [...zoneContext.matchAll(/(?:timeZoneOffset|\btz)\s*[:=]\s*([+-]?\d+)/gi)];
     const timezoneMinutes = timezoneMatches.length ? Number(timezoneMatches.at(-1)[1]) : 0;
-    ranges.push({ name, start: start.index, end: end.index, rows, sportStart, alg, userInfo, sdkVersion, startFitLtPace, startFitLtHr, outputEvidence, workoutType: typeMatch ? Number(typeMatch[1]) : 31, timezoneMinutes });
+    ranges.push({ name, start: start.index, end: end.index, rows, statusEvents: statusEvents.filter((event) => event.position >= start.index && event.position < end.index), sportStart, alg, userInfo, sdkVersion, startFitLtPace, startFitLtHr, outputEvidence, workoutType: typeMatch ? Number(typeMatch[1]) : 31, timezoneMinutes });
   }
 
   if (ranges.length) return ranges;
@@ -292,6 +308,10 @@ function csvEscape(value) {
 function makeCsv(sample, fitSession = null, mergedEvents = []) {
   let rows;
   let matchCount = 0;
+  const pauseIntervals = mergeIntervals([
+    ...(fitSession?.pauseIntervals || []).map(([start, end]) => [Math.max(start, fitSession.start), Math.min(end, fitSession.end)]),
+    ...mergedEvents.flatMap((source) => logPauseIntervals(source.sample, fitSession)),
+  ]);
   if (fitSession) {
     const logByTimestamp = new Map();
     for (const source of mergedEvents) {
@@ -305,31 +325,40 @@ function makeCsv(sample, fitSession = null, mergedEvents = []) {
         if (!logByTimestamp.has(timestamp)) logByTimestamp.set(timestamp, event);
       }
     }
+    const activeFitRecords = fitSession.records.filter((record) => !isNonRunning(record.timestamp, pauseIntervals));
+    const activeLogEntries = [...logByTimestamp].filter(([timestamp]) => !isNonRunning(timestamp, pauseIntervals));
     const matchedTimes = new Set();
-    rows = fitSession.records.map((record) => {
+    rows = activeFitRecords.map((record) => {
       const event = logByTimestamp.get(record.timestamp);
       if (event) matchedTimes.add(record.timestamp);
-      const hr = record.hr ?? (event && event.hr >= 0 ? event.hr : -1);
-      const speed = record.speed ?? (event && event.speed >= 0 ? event.speed : -1);
-      return csvRow(record.timestamp, fitSession.timezoneMinutes, hr, speed, sample.workoutType, sample.userInfo);
-    });
+      const hr = record.hr ?? event?.hr;
+      const speed = record.speed ?? event?.speed;
+      return { timestamp: record.timestamp, row: csvRow(record.timestamp, fitSession.timezoneMinutes, hr, speed, sample.workoutType, sample.userInfo, activeTimestamp(record.timestamp, pauseIntervals)) };
+    }).map(({ row }) => row);
     matchCount = matchedTimes.size;
-    return { rows, matchCount, logCount: logByTimestamp.size };
+    const fitTimes = new Set(activeFitRecords.map((record) => record.timestamp));
+    for (const [timestamp, event] of activeLogEntries) {
+      if (fitTimes.has(timestamp)) continue;
+      if (!isNonRunning(timestamp, pauseIntervals)) rows.push(csvRow(timestamp, fitSession.timezoneMinutes, event.hr, event.speed, sample.workoutType, sample.userInfo, activeTimestamp(timestamp, pauseIntervals)));
+    }
+    rows.sort((a, b) => Number(a[0]) - Number(b[0]));
+    return {
+      rows, matchCount, logCount: activeLogEntries.length,
+      logOnlyCount: activeLogEntries.length - matchCount,
+      fitOnlyCount: activeFitRecords.length - matchCount,
+      statusFilteredCount: fitSession.records.length - activeFitRecords.length + logByTimestamp.size - activeLogEntries.length,
+    };
   }
 
   const dateMatch = sample.name.match(/(20\d{2})(\d{2})(\d{2})/);
   const baseDate = dateMatch ? Date.UTC(Number(dateMatch[1]), Number(dateMatch[2]) - 1, Number(dateMatch[3])) / 1000 : Math.floor(Date.now() / 1000);
+  const logIntervals = mergeIntervals([...pauseIntervals, ...logPauseIntervals(sample)]);
   rows = sample.rows.map((event, index) => {
-    let timestamp = null;
-    if (sample.sportStart?.clock && event.clock) {
-      const year = dateMatch ? Number(dateMatch[1]) : new Date(baseDate * 1000).getUTCFullYear();
-      const localBase = Date.UTC(year, sample.sportStart.clock.month - 1, sample.sportStart.clock.day, sample.sportStart.clock.hour, sample.sportStart.clock.minute, sample.sportStart.clock.second);
-      timestamp = Math.floor(localBase / 1000 + localDeltaSeconds(sample.sportStart.clock, event.clock) - (sample.timezoneMinutes || 0) * 60);
-    }
-    if (!timestamp) timestamp = baseDate + index - (sample.timezoneMinutes || 0) * 60;
-    return csvRow(timestamp, sample.timezoneMinutes || 0, event.hr, event.speed, sample.workoutType, sample.userInfo);
-  });
-  return { rows, matchCount: rows.length, logCount: rows.length };
+    const timestamp = timestampForLogClock(sample, event.clock) || baseDate + index - (sample.timezoneMinutes || 0) *  60;
+    return { event, timestamp };
+  }).filter(({ timestamp }) => !isNonRunning(timestamp, logIntervals)).map(({ event, timestamp }) =>
+    csvRow(timestamp, sample.timezoneMinutes || 0, event.hr, event.speed, sample.workoutType, sample.userInfo, activeTimestamp(timestamp, logIntervals)));
+  return { rows, matchCount: rows.length, logCount: rows.length, logOnlyCount: 0, fitOnlyCount: 0, statusFilteredCount: sample.rows.length - rows.length };
 }
 
 function calculateEstimate(sample, rows) {
@@ -353,7 +382,7 @@ function calculateEstimate(sample, rows) {
     rows.forEach((row) => {
       const hr = Number(row[15]);
       const speedKmh = Number(row[16]);
-      const hrPass = hr > 0 && hr > hrLine;
+      const hrPass = hr > 0 && hr < 255 && hr > hrLine;
       const speedPass = speedKmh >= 0 && speedKmh > 6;
       if (hrPass) hrPassCount += 1;
       if (speedPass) speedPassCount += 1;
@@ -363,8 +392,68 @@ function calculateEstimate(sample, rows) {
   return { useMax, hrLine, hrPassCount, speedPassCount, estimatePoints, meetsTimeCondition: estimatePoints !== null ? estimatePoints > 720 : null };
 }
 
-function csvRow(timestamp, timezone, hr, speedKmh, workoutType, userInfo) {
-  return [timestamp, formatLocalDateTime(timestamp, timezone), timezone, '-1.0', '-1.0', '-1.0', '-1.0', '-1.0', '0', '0', '-1.0', '-1.0', '-1.0', '-1.0', '-1.0', Number(hr) < 0 ? '-1' : Math.round(hr), Number(speedKmh) < 0 ? '-1.00' : Number(speedKmh).toFixed(2), '0', '-1.0', '-1.0', '0', workoutType, timestamp, userInfo, '0', '-1.00', '-1.00', '-1.00'];
+function mergeIntervals(intervals) {
+  const merged = [];
+  for (const [start, end] of intervals.filter(([a, b]) => b > a).sort((a, b) => a[0] - b[0])) {
+    const last = merged.at(-1);
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  return merged;
+}
+
+function timestampForLogClock(sample, clock, fitSession = null) {
+  if (!clock) return null;
+  if (fitSession) return Math.round(fitSession.start + localDeltaSeconds(fitLocalClock(fitSession.localStart), clock));
+  const dateMatch = sample.name.match(/(20\d{2})(\d{2})(\d{2})/);
+  const startClock = sample.sportStart?.clock || sample.rows[0]?.clock;
+  if (!startClock) return null;
+  const baseDate = dateMatch
+    ? [Number(dateMatch[1]), Number(dateMatch[2]) - 1, Number(dateMatch[3])]
+    : [new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()];
+  const localStart = Date.UTC(...baseDate, startClock.hour, startClock.minute, startClock.second);
+  return Math.round(localStart / 1000 + localDeltaSeconds(startClock, clock) - (sample.timezoneMinutes || 0) * 60);
+}
+
+function logPauseIntervals(sample, fitSession = null) {
+  const events = (sample.statusEvents || []).map((event) => ({ ...event, timestamp: timestampForLogClock(sample, event.clock, fitSession) }))
+    .filter((event) => Number.isFinite(event.timestamp)).sort((a, b) => a.timestamp - b.timestamp);
+  const intervals = [];
+  let pauseStart = null;
+  for (const event of events) {
+    if (event.state !== 2) {
+      if (pauseStart === null) pauseStart = event.timestamp;
+    } else if (pauseStart !== null) {
+      if (event.timestamp > pauseStart) intervals.push([pauseStart, event.timestamp]);
+      pauseStart = null;
+    }
+  }
+  return intervals;
+}
+
+function isNonRunning(timestamp, intervals) {
+  return intervals.some(([start, end]) => timestamp >= start && timestamp < end);
+}
+
+function activeTimestamp(timestamp, intervals) {
+  return Math.round(timestamp - intervals.reduce((sum, [start, end]) => sum + Math.max(0, Math.min(timestamp, end) - start), 0));
+}
+
+function normalizeHr(value) {
+  if (value === null || value === undefined || value === '') return 255;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 && number < 255 ? Math.round(number) : 255;
+}
+
+function normalizeSpeed(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Number(number.toFixed(2)) : 0;
+}
+
+function csvRow(timestamp, timezone, hr, speedKmh, workoutType, userInfo, activeTs = timestamp) {
+  const profile = userInfo || '-1.0,-1.0,-1.0,-1.0,-1.0,-1.0,-1.0';
+  return [timestamp, formatLocalDateTime(timestamp, timezone), timezone, '-1.0', '-1.0', '-1.0', '-1.0', '-1.0', '0', '0', '-1.0', '-1.0', '-1.0', '-1.0', '-1.0', normalizeHr(hr), normalizeSpeed(speedKmh).toFixed(2), '0', '-1.0', '-1.0', '0', workoutType ?? -1, timestamp, profile, '0', '-1.00', '-1.00', '-1.00', activeTs];
 }
 
 function analyze({ logs, fits }) {
@@ -373,10 +462,9 @@ function analyze({ logs, fits }) {
     const text = new TextDecoder('utf-8', { fatal: false }).decode(log.buffer);
     logSamples.push(...findLogSamples(log.name, text));
   }
-  if (!logSamples.length) throw new Error('日志中没有找到可解析的 GoMore 运动数据。');
-
   const fitSessions = [];
   for (const fit of fits) fitSessions.push(...readFit(fit.buffer, fit.name));
+  if (!logSamples.length && !fitSessions.length) throw new Error('请至少提供一份可解析的日志或 FIT 文件。');
   const results = [];
   const issues = [];
   const usedLogs = new Set();
@@ -392,33 +480,33 @@ function analyze({ logs, fits }) {
       const bestDelta = candidates[0]?.delta;
       const matching = candidates.filter((entry) => entry.delta - bestDelta <= 1);
       if (!matching.length) {
-        issues.push(`${session.filename}（运动 ${session.index}）：没有找到开始时间相近的日志样本，因此未生成 CSV。`);
+        const sample = { name: session.filename, userInfo: null, alg: null, sdkVersion: null, startFitLtPace: null, startFitLtHr: null, outputEvidence: {}, workoutType: -1, timezoneMinutes: session.timezoneMinutes };
+        const merged = makeCsv(sample, session, []);
+        const csv = [CSV_HEADER, ...merged.rows].map((row) => row.map(csvEscape).join(',')).join('\r\n') + '\r\n';
+        results.push({ userInfo: null, profileMissing: true, alg: null, filename: `gomore_data_${filenameTimestamp(session.start, session.timezoneMinutes)}.csv`, csv, preview: [CSV_HEADER, ...merged.rows.slice(0, 10)], rowCount: merged.rows.length, sources: [session.filename], matchRate: null, fitOnlyCount: merged.fitOnlyCount, statusFilteredCount: merged.statusFilteredCount, startTime: formatLocalDateTime(session.start, session.timezoneMinutes) });
         continue;
       }
       matching.forEach((entry) => usedLogs.add(entry.sample));
       const primary = matching.find((entry) => entry.sample.userInfo)?.sample || matching[0].sample;
-      if (!primary.userInfo) {
-        results.push({ userInfo: null, filename: null, startTime: formatLocalDateTime(session.start, session.timezoneMinutes) });
-        continue;
-      }
       const merged = makeCsv(primary, session, matching.map((entry) => ({ sample: entry.sample })));
       const estimate = calculateEstimate(primary, merged.rows);
       const previewRows = [CSV_HEADER, ...merged.rows.slice(0, 10)];
       const csv = [CSV_HEADER, ...merged.rows].map((row) => row.map(csvEscape).join(',')).join('\r\n') + '\r\n';
       const percentage = merged.logCount ? Math.round(merged.matchCount / merged.logCount * 100) : 0;
-      results.push({ userInfo: primary.userInfo, alg: primary.alg, sdkVersion: primary.sdkVersion, startFitLtPace: primary.startFitLtPace, startFitLtHr: primary.startFitLtHr, outputEvidence: primary.outputEvidence, estimate, filename: `gomore_data_${filenameTimestamp(session.start, session.timezoneMinutes)}.csv`, csv, preview: previewRows, rowCount: merged.rows.length, sources: [session.filename, ...matching.map((entry) => entry.sample.name)], matchRate: percentage, fitOnlyCount: session.records.length - merged.matchCount, startTime: formatLocalDateTime(session.start, session.timezoneMinutes) });
+      results.push({ userInfo: primary.userInfo, profileMissing: !primary.userInfo, alg: primary.alg, sdkVersion: primary.sdkVersion, startFitLtPace: primary.startFitLtPace, startFitLtHr: primary.startFitLtHr, outputEvidence: primary.outputEvidence, estimate, filename: `gomore_data_${filenameTimestamp(session.start, session.timezoneMinutes)}.csv`, csv, preview: previewRows, rowCount: merged.rows.length, sources: [session.filename, ...matching.map((entry) => entry.sample.name)], matchRate: percentage, fitOnlyCount: merged.fitOnlyCount, logOnlyCount: merged.logOnlyCount, statusFilteredCount: merged.statusFilteredCount, startTime: formatLocalDateTime(session.start, session.timezoneMinutes) });
     }
-    logSamples.filter((sample) => !usedLogs.has(sample)).forEach((sample) => issues.push(`${sample.name}：日志样本没有匹配到 FIT 运动开始时间。`));
-  } else {
-    for (const sample of logSamples) {
-      if (!sample.userInfo) {
-        results.push({ userInfo: null, filename: null });
-        continue;
-      }
+    logSamples.filter((sample) => !usedLogs.has(sample)).forEach((sample) => {
       const output = makeCsv(sample);
       const estimate = calculateEstimate(sample, output.rows);
       const csv = [CSV_HEADER, ...output.rows].map((row) => row.map(csvEscape).join(',')).join('\r\n') + '\r\n';
-      results.push({ userInfo: sample.userInfo, alg: sample.alg, sdkVersion: sample.sdkVersion, startFitLtPace: sample.startFitLtPace, startFitLtHr: sample.startFitLtHr, outputEvidence: sample.outputEvidence, estimate, filename: `gomore_data_${filenameTimestamp(output.rows[0][0], sample.timezoneMinutes || 0)}.csv`, csv, preview: [CSV_HEADER, ...output.rows.slice(0, 10)], rowCount: output.rows.length, sources: [sample.name], matchRate: null, fitOnlyCount: 0, startTime: formatLocalDateTime(output.rows[0][0], sample.timezoneMinutes || 0) });
+      results.push({ userInfo: sample.userInfo, profileMissing: !sample.userInfo, alg: sample.alg, sdkVersion: sample.sdkVersion, startFitLtPace: sample.startFitLtPace, startFitLtHr: sample.startFitLtHr, outputEvidence: sample.outputEvidence, estimate, filename: `gomore_data_${filenameTimestamp(output.rows[0][0], sample.timezoneMinutes || 0)}.csv`, csv, preview: [CSV_HEADER, ...output.rows.slice(0, 10)], rowCount: output.rows.length, sources: [sample.name], matchRate: null, fitOnlyCount: 0, statusFilteredCount: output.statusFilteredCount, startTime: formatLocalDateTime(output.rows[0][0], sample.timezoneMinutes || 0) });
+    });
+  } else {
+    for (const sample of logSamples) {
+      const output = makeCsv(sample);
+      const estimate = calculateEstimate(sample, output.rows);
+      const csv = [CSV_HEADER, ...output.rows].map((row) => row.map(csvEscape).join(',')).join('\r\n') + '\r\n';
+      results.push({ userInfo: sample.userInfo, profileMissing: !sample.userInfo, alg: sample.alg, sdkVersion: sample.sdkVersion, startFitLtPace: sample.startFitLtPace, startFitLtHr: sample.startFitLtHr, outputEvidence: sample.outputEvidence, estimate, filename: `gomore_data_${filenameTimestamp(output.rows[0][0], sample.timezoneMinutes || 0)}.csv`, csv, preview: [CSV_HEADER, ...output.rows.slice(0, 10)], rowCount: output.rows.length, sources: [sample.name], matchRate: null, fitOnlyCount: 0, statusFilteredCount: output.statusFilteredCount, startTime: formatLocalDateTime(output.rows[0][0], sample.timezoneMinutes || 0) });
     }
   }
   return { results, issues, logCount: logs.length, fitCount: fits.length };
