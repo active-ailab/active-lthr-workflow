@@ -185,6 +185,27 @@ function findSportStarts(content) {
   return matches.map((match) => ({ position: match.index, clock: lineClock(content, match.index) })).filter((item) => item.clock);
 }
 
+function findGoMoreStarts(content) {
+  // Prefer the GoMore algorithm's explicit enable record. A generic
+  // "enable gomore" match also catches failed attempts for unsupported sports.
+  const algorithmStarts = [...content.matchAll(/ALG_GM\s+GoMore enable workoutType\s*=\s*\d+/gi)];
+  if (algorithmStarts.length) return algorithmStarts;
+
+  // Some log versions expose the successful SPRT_GMS enable but not ALG_GM.
+  const serviceStarts = [...content.matchAll(/SPRT_GMS\s+enable gomore algo type\s*=\s*\d+/gi)];
+  if (serviceStarts.length) return serviceStarts;
+
+  // Legacy formats: retain the broader markers, but never accept an explicit
+  // failure/unsupported result as the beginning of an algorithm session.
+  return [...content.matchAll(/GoMore\s+enable|enable.*Gomore|ALG_GM[^\n]*enable|GoMore\s+enabled|\benable\s+GoMore|_enableGomoreAlgo/gi)]
+    .filter((match) => {
+      const lineStart = content.lastIndexOf('\n', match.index - 1) + 1;
+      let lineEnd = content.indexOf('\n', match.index);
+      if (lineEnd < 0) lineEnd = content.length;
+      return !/\bfail(?:ed|ure)?\b|\bunsupported\b|\bnot\s+support(?:ed)?\b/i.test(content.slice(lineStart, lineEnd));
+    });
+}
+
 function findLogSamples(name, content) {
   const events = [];
   function extractUserInfo(sourceText) {
@@ -216,7 +237,7 @@ function findLogSamples(name, content) {
     });
   }
 
-  const starts = [...content.matchAll(/GoMore\s+enable|enable.*Gomore|ALG_GM[^\n]*enable|GoMore\s+enabled|\benable\s+GoMore|_enableGomoreAlgo/gi)];
+  const starts = findGoMoreStarts(content);
   const ends = [...content.matchAll(/_disableGomoreAlgo|disable.*Gomore/gi)];
   const ranges = [];
   let endIndex = 0;
@@ -230,6 +251,10 @@ function findLogSamples(name, content) {
     const rows = events.filter((event) => event.position >= start.index && event.position < end.index);
     if (!rows.length) continue;
     const sportStart = findNearestSportStart(content, start.index);
+    let startLineEnd = content.indexOf('\n', start.index);
+    if (startLineEnd < 0) startLineEnd = content.length;
+    const rtcMatch = content.slice(start.index, startLineEnd).match(/\brtc\s*=\s*(\d{9,13})\b/i);
+    const rtcStart = rtcMatch ? Number(rtcMatch[1]) : null;
     const outputs = [...content.slice(start.index, end.index).matchAll(/ALG_GM[^\n]*/gi)].map((match) => {
       const line = match[0];
       const get = (regex) => { const m = line.match(regex); return m ? Number(m[1]) : null; };
@@ -265,13 +290,13 @@ function findLogSamples(name, content) {
     const zoneContext = content.slice(Math.max(0, start.index - 200), Math.min(content.length, start.index + 700));
     const timezoneMatches = [...zoneContext.matchAll(/(?:timeZoneOffset|\btz)\s*[:=]\s*([+-]?\d+)/gi)];
     const timezoneMinutes = timezoneMatches.length ? Number(timezoneMatches.at(-1)[1]) : 0;
-    ranges.push({ name, start: start.index, end: end.index, rows, statusEvents: statusEvents.filter((event) => event.position >= start.index && event.position < end.index), sportStart, alg, userInfo, userInfoSource: userInfo ? '日志样本关联范围（含前序上下文）' : null, sdkVersion, startFitLtPace, startFitLtHr, outputEvidence, workoutType: typeMatch ? Number(typeMatch[1]) : 31, timezoneMinutes });
+    ranges.push({ name, start: start.index, end: end.index, rows, statusEvents: statusEvents.filter((event) => event.position >= start.index && event.position < end.index), sportStart, rtcStart, alg, userInfo, userInfoSource: userInfo ? '日志样本关联范围（含前序上下文）' : null, sdkVersion, startFitLtPace, startFitLtHr, outputEvidence, workoutType: typeMatch ? Number(typeMatch[1]) : 31, timezoneMinutes });
   }
 
   if (ranges.length) return ranges;
   if (!events.length) return [];
   const userInfo = extractUserInfo(content);
-  return [{ name, start: events[0].position, end: events.at(-1).position, rows: events, sportStart: findNearestSportStart(content, events[0].position), alg: null, userInfo, userInfoSource: userInfo ? '日志样本关联范围（含前序上下文）' : null, workoutType: 31, timezoneMinutes: 0 }];
+  return [{ name, start: events[0].position, end: events.at(-1).position, rows: events, sportStart: findNearestSportStart(content, events[0].position), rtcStart: null, alg: null, userInfo, userInfoSource: userInfo ? '日志样本关联范围（含前序上下文）' : null, workoutType: 31, timezoneMinutes: 0 }];
 }
 
 function findNearestSportStart(content, position) {
@@ -287,6 +312,11 @@ function fitLocalClock(timestamp) {
 function startDifferenceSeconds(logClock, fitClock) {
   if (!logClock || logClock.month !== fitClock.month || logClock.day !== fitClock.day) return Infinity;
   return Math.abs(secondsOfDay(logClock) - secondsOfDay(fitClock));
+}
+
+function sampleSessionStartDifferenceSeconds(sample, fitSession) {
+  if (Number.isFinite(sample.rtcStart)) return Math.abs(sample.rtcStart - fitSession.start);
+  return startDifferenceSeconds(sample.sportStart?.clock, fitLocalClock(fitSession.localStart));
 }
 
 function filenameTimestamp(timestamp, timezoneMinutes) {
@@ -406,6 +436,9 @@ function mergeIntervals(intervals) {
 function timestampForLogClock(sample, clock, fitSession = null) {
   if (!clock) return null;
   if (fitSession) return Math.round(fitSession.start + localDeltaSeconds(fitLocalClock(fitSession.localStart), clock));
+  if (Number.isFinite(sample.rtcStart) && sample.sportStart?.clock) {
+    return Math.round(sample.rtcStart + localDeltaSeconds(sample.sportStart.clock, clock));
+  }
   const dateMatch = sample.name.match(/(20\d{2})(\d{2})(\d{2})/);
   const startClock = sample.sportStart?.clock || sample.rows[0]?.clock;
   if (!startClock) return null;
@@ -473,9 +506,8 @@ function analyze({ logs, fits }) {
   if (fitSessions.length) {
     fitSessions.sort((a, b) => a.start - b.start);
     for (const session of fitSessions) {
-      const fitClock = fitLocalClock(session.localStart);
       const candidates = logSamples.filter((sample) => !usedLogs.has(sample))
-        .map((sample) => ({ sample, delta: startDifferenceSeconds(sample.sportStart?.clock, fitClock) }))
+        .map((sample) => ({ sample, delta: sampleSessionStartDifferenceSeconds(sample, session) }))
       .filter((entry) => entry.delta <= 30)
         .sort((a, b) => a.delta - b.delta);
       const bestDelta = candidates[0]?.delta;
@@ -484,7 +516,7 @@ function analyze({ logs, fits }) {
         const sample = { name: session.filename, userInfo: null, alg: null, sdkVersion: null, startFitLtPace: null, startFitLtHr: null, outputEvidence: {}, workoutType: -1, timezoneMinutes: session.timezoneMinutes };
         const merged = makeCsv(sample, session, []);
         const csv = [CSV_HEADER, ...merged.rows].map((row) => row.map(csvEscape).join(',')).join('\r\n') + '\r\n';
-        results.push({ userInfo: null, userInfoSource: null, profileMissing: true, alg: null, filename: `gomore_data_${filenameTimestamp(session.start, session.timezoneMinutes)}.csv`, csv, preview: [CSV_HEADER, ...merged.rows.slice(0, 10)], rowCount: merged.rows.length, sources: [session.filename], matchRate: null, fitOnlyCount: merged.fitOnlyCount, statusFilteredCount: merged.statusFilteredCount, startTime: formatLocalDateTime(session.start, session.timezoneMinutes) });
+        results.push({ userInfo: null, userInfoSource: null, profileMissing: true, alg: null, filename: `gomore_data_${filenameTimestamp(session.start, session.timezoneMinutes)}.csv`, csv, preview: [CSV_HEADER, ...merged.rows.slice(0, 10)], rowCount: merged.rows.length, sources: [session.filename], matchRate: null, fitOnlyCount: merged.fitOnlyCount, statusFilteredCount: merged.statusFilteredCount, startTimestamp: session.start, startTime: formatLocalDateTime(session.start, session.timezoneMinutes) });
         continue;
       }
       matching.forEach((entry) => usedLogs.add(entry.sample));
@@ -494,20 +526,20 @@ function analyze({ logs, fits }) {
       const previewRows = [CSV_HEADER, ...merged.rows.slice(0, 10)];
       const csv = [CSV_HEADER, ...merged.rows].map((row) => row.map(csvEscape).join(',')).join('\r\n') + '\r\n';
       const percentage = merged.logCount ? Math.round(merged.matchCount / merged.logCount * 100) : 0;
-      results.push({ userInfo: primary.userInfo, userInfoSource: primary.userInfoSource, profileMissing: !primary.userInfo, alg: primary.alg, sdkVersion: primary.sdkVersion, startFitLtPace: primary.startFitLtPace, startFitLtHr: primary.startFitLtHr, outputEvidence: primary.outputEvidence, estimate, filename: `gomore_data_${filenameTimestamp(session.start, session.timezoneMinutes)}.csv`, csv, preview: previewRows, rowCount: merged.rows.length, sources: [session.filename, ...matching.map((entry) => entry.sample.name)], matchRate: percentage, fitOnlyCount: merged.fitOnlyCount, logOnlyCount: merged.logOnlyCount, statusFilteredCount: merged.statusFilteredCount, startTime: formatLocalDateTime(session.start, session.timezoneMinutes) });
+      results.push({ userInfo: primary.userInfo, userInfoSource: primary.userInfoSource, profileMissing: !primary.userInfo, alg: primary.alg, sdkVersion: primary.sdkVersion, startFitLtPace: primary.startFitLtPace, startFitLtHr: primary.startFitLtHr, outputEvidence: primary.outputEvidence, estimate, filename: `gomore_data_${filenameTimestamp(session.start, session.timezoneMinutes)}.csv`, csv, preview: previewRows, rowCount: merged.rows.length, sources: [session.filename, ...matching.map((entry) => entry.sample.name)], matchRate: percentage, fitOnlyCount: merged.fitOnlyCount, logOnlyCount: merged.logOnlyCount, statusFilteredCount: merged.statusFilteredCount, startTimestamp: session.start, startTime: formatLocalDateTime(session.start, session.timezoneMinutes) });
     }
     logSamples.filter((sample) => !usedLogs.has(sample)).forEach((sample) => {
       const output = makeCsv(sample);
       const estimate = calculateEstimate(sample, output.rows);
       const csv = [CSV_HEADER, ...output.rows].map((row) => row.map(csvEscape).join(',')).join('\r\n') + '\r\n';
-      results.push({ userInfo: sample.userInfo, userInfoSource: sample.userInfoSource, profileMissing: !sample.userInfo, alg: sample.alg, sdkVersion: sample.sdkVersion, startFitLtPace: sample.startFitLtPace, startFitLtHr: sample.startFitLtHr, outputEvidence: sample.outputEvidence, estimate, filename: `gomore_data_${filenameTimestamp(output.rows[0][0], sample.timezoneMinutes || 0)}.csv`, csv, preview: [CSV_HEADER, ...output.rows.slice(0, 10)], rowCount: output.rows.length, sources: [sample.name], matchRate: null, fitOnlyCount: 0, statusFilteredCount: output.statusFilteredCount, startTime: formatLocalDateTime(output.rows[0][0], sample.timezoneMinutes || 0) });
+      results.push({ userInfo: sample.userInfo, userInfoSource: sample.userInfoSource, profileMissing: !sample.userInfo, alg: sample.alg, sdkVersion: sample.sdkVersion, startFitLtPace: sample.startFitLtPace, startFitLtHr: sample.startFitLtHr, outputEvidence: sample.outputEvidence, estimate, filename: `gomore_data_${filenameTimestamp(output.rows[0][0], sample.timezoneMinutes || 0)}.csv`, csv, preview: [CSV_HEADER, ...output.rows.slice(0, 10)], rowCount: output.rows.length, sources: [sample.name], matchRate: null, fitOnlyCount: 0, statusFilteredCount: output.statusFilteredCount, startTimestamp: sample.rtcStart ?? output.rows[0]?.[0] ?? null, startTime: formatLocalDateTime(sample.rtcStart ?? output.rows[0][0], sample.timezoneMinutes || 0) });
     });
   } else {
     for (const sample of logSamples) {
       const output = makeCsv(sample);
       const estimate = calculateEstimate(sample, output.rows);
       const csv = [CSV_HEADER, ...output.rows].map((row) => row.map(csvEscape).join(',')).join('\r\n') + '\r\n';
-      results.push({ userInfo: sample.userInfo, userInfoSource: sample.userInfoSource, profileMissing: !sample.userInfo, alg: sample.alg, sdkVersion: sample.sdkVersion, startFitLtPace: sample.startFitLtPace, startFitLtHr: sample.startFitLtHr, outputEvidence: sample.outputEvidence, estimate, filename: `gomore_data_${filenameTimestamp(output.rows[0][0], sample.timezoneMinutes || 0)}.csv`, csv, preview: [CSV_HEADER, ...output.rows.slice(0, 10)], rowCount: output.rows.length, sources: [sample.name], matchRate: null, fitOnlyCount: 0, statusFilteredCount: output.statusFilteredCount, startTime: formatLocalDateTime(output.rows[0][0], sample.timezoneMinutes || 0) });
+      results.push({ userInfo: sample.userInfo, userInfoSource: sample.userInfoSource, profileMissing: !sample.userInfo, alg: sample.alg, sdkVersion: sample.sdkVersion, startFitLtPace: sample.startFitLtPace, startFitLtHr: sample.startFitLtHr, outputEvidence: sample.outputEvidence, estimate, filename: `gomore_data_${filenameTimestamp(output.rows[0][0], sample.timezoneMinutes || 0)}.csv`, csv, preview: [CSV_HEADER, ...output.rows.slice(0, 10)], rowCount: output.rows.length, sources: [sample.name], matchRate: null, fitOnlyCount: 0, statusFilteredCount: output.statusFilteredCount, startTimestamp: sample.rtcStart ?? output.rows[0]?.[0] ?? null, startTime: formatLocalDateTime(sample.rtcStart ?? output.rows[0][0], sample.timezoneMinutes || 0) });
     }
   }
   return { results, issues, logCount: logs.length, fitCount: fits.length };

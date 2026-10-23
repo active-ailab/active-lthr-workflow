@@ -33,6 +33,7 @@ const output = result.results.map((sample, index) => {
     csv: filePath,
     filename,
     rowCount: sample.rowCount,
+    startTimestamp: sample.startTimestamp,
     sources: sample.sources,
     matchRate: sample.matchRate,
     fitOnlyCount: sample.fitOnlyCount,

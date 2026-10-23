@@ -145,6 +145,7 @@ def analyze_log_fit_sources(source_script, log_files, fit_files, analysis_dir):
             "index": sample.get("index"),
             "csv": sample.get("csv"),
             "rows": sample.get("rowCount"),
+            "start_ts": sample.get("startTimestamp"),
             "userInfo": user_info,
             "userInfoSource": sample.get("userInfoSource"),
             "alg_gm": sample.get("alg"),
