@@ -308,6 +308,13 @@ function renderResults(data) {
   heading.append(title);
   resultsSection.append(heading);
 
+  (data.issues || []).forEach((issue) => {
+    const warning = document.createElement('p');
+    warning.className = 'analysis-warning';
+    warning.textContent = issue.message || String(issue);
+    resultsSection.append(warning);
+  });
+
   data.results.forEach((result, index) => {
     const card = document.createElement('article');
     card.className = 'result-card';
@@ -330,7 +337,8 @@ function renderResults(data) {
       const fusion = result.matchRate === null || result.matchRate === undefined
         ? '单源数据'
         : `log/FIT 时间戳匹配 ${result.matchRate}%（FIT 独有 ${result.fitOnlyCount ?? 0} 点，log 独有 ${result.logOnlyCount ?? 0} 点）`;
-      sourceNote.textContent = `用户信息来源：${result.userInfoSource || '未找到'}；${fusion}；明确非运动状态跳过 ${result.statusFilteredCount ?? 0} 点；运动中的非法 HR/速度保留为 CSV 255/0，SVG 按 0 绘制。`;
+      const matchMethod = result.matchMethod === 'end-time-fallback' ? '，按结束时间兜底配对' : '';
+      sourceNote.textContent = `用户信息来源：${result.userInfoSource || '未找到'}；${fusion}${matchMethod}；明确非运动状态跳过 ${result.statusFilteredCount ?? 0} 点；运动中的非法 HR/速度保留为 CSV 255/0，SVG 按 0 绘制。`;
       card.append(sourceNote);
       if (result.csv && result.filename) {
         const download = document.createElement('a');
@@ -374,7 +382,8 @@ function renderResults(data) {
       const fusion = result.matchRate === null || result.matchRate === undefined
         ? '单源数据'
         : `log/FIT 时间戳匹配 ${result.matchRate}%（FIT 独有 ${result.fitOnlyCount ?? 0} 点，log 独有 ${result.logOnlyCount ?? 0} 点）`;
-      sourceNote.textContent = `用户信息来源：${result.userInfoSource || '日志样本关联范围'}；${fusion}；暂停、预开启、结束、校准等明确非运动状态跳过 ${result.statusFilteredCount ?? 0} 点。运动中的非法 HR/速度仍保留：CSV 分别使用 255/0，SVG 按 0 绘制。`;
+      const matchMethod = result.matchMethod === 'end-time-fallback' ? '，按结束时间兜底配对' : '';
+      sourceNote.textContent = `用户信息来源：${result.userInfoSource || '日志样本关联范围'}；${fusion}${matchMethod}；暂停、预开启、结束、校准等明确非运动状态跳过 ${result.statusFilteredCount ?? 0} 点。运动中的非法 HR/速度仍保留：CSV 分别使用 255/0，SVG 按 0 绘制。`;
       const summary = document.createElement('div');
       summary.className = 'gomore-summary';
       const summaryTitle = document.createElement('h4');

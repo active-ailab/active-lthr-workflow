@@ -1,4 +1,6 @@
 const FIT_EPOCH = 631065600;
+const LOG_FIT_END_TIME_TOLERANCE_SECONDS = 5;
+const MIN_LOG_FIT_END_OVERLAP_SECONDS = 60;
 const CSV_HEADER = [
   'TIMESTAMP', 'DATE_TIME', 'timeZoneOffset', 'PPG1', 'PPG2', 'ACC_X', 'ACC_Y', 'ACC_Z',
   'ppgLength', 'accLength', 'Longitude', 'Latitude', 'Altitude', 'gpsSpeed', 'gpsAccuracy',
@@ -314,6 +316,33 @@ function startDifferenceSeconds(logClock, fitClock) {
   return Math.abs(secondsOfDay(logClock) - secondsOfDay(fitClock));
 }
 
+function sampleClockRange(sample) {
+  const clockedRows = sample.rows.filter((row) => row.clock);
+  if (!clockedRows.length) return null;
+  return { start: clockedRows[0].clock, end: clockedRows.at(-1).clock, count: clockedRows.length };
+}
+
+function hasReliableSampleStart(sample) {
+  return Number.isFinite(sample.rtcStart) || Boolean(sample.sportStart?.clock);
+}
+
+function sampleSessionEndDifferenceSeconds(sample, fitSession) {
+  const range = sampleClockRange(sample);
+  if (!range || range.count < 2) return Infinity;
+
+  const fitStartClock = fitLocalClock(fitSession.localStart);
+  const fitEndClock = fitLocalClock(fitSession.localStart + fitSession.end - fitSession.start);
+  const endDifference = startDifferenceSeconds(range.end, fitEndClock);
+  if (endDifference > LOG_FIT_END_TIME_TOLERANCE_SECONDS) return Infinity;
+
+  const fitDuration = fitSession.end - fitSession.start;
+  const sampleStartOffset = localDeltaSeconds(fitStartClock, range.start);
+  const sampleEndOffset = localDeltaSeconds(fitStartClock, range.end);
+  const overlap = Math.min(fitDuration, sampleEndOffset) - Math.max(0, sampleStartOffset);
+  if (overlap < MIN_LOG_FIT_END_OVERLAP_SECONDS) return Infinity;
+  return endDifference;
+}
+
 function sampleSessionStartDifferenceSeconds(sample, fitSession) {
   if (Number.isFinite(sample.rtcStart)) return Math.abs(sample.rtcStart - fitSession.start);
   return startDifferenceSeconds(sample.sportStart?.clock, fitLocalClock(fitSession.localStart));
@@ -348,9 +377,9 @@ function makeCsv(sample, fitSession = null, mergedEvents = []) {
     for (const source of mergedEvents) {
       let lastTimestamp = null;
       for (const event of source.sample.rows) {
-        if (!event.clock || !source.sample.sportStart?.clock) continue;
-        const delta = localDeltaSeconds(fitLocalClock(fitSession.localStart), event.clock);
-        let timestamp = Math.round(fitSession.start + delta);
+        if (!event.clock) continue;
+        let timestamp = timestampForLogClock(source.sample, event.clock, fitSession);
+        if (!Number.isFinite(timestamp)) continue;
         if (lastTimestamp !== null && timestamp <= lastTimestamp) timestamp = lastTimestamp + 1;
         lastTimestamp = timestamp;
         if (!logByTimestamp.has(timestamp)) logByTimestamp.set(timestamp, event);
@@ -435,12 +464,19 @@ function mergeIntervals(intervals) {
 
 function timestampForLogClock(sample, clock, fitSession = null) {
   if (!clock) return null;
-  if (fitSession) return Math.round(fitSession.start + localDeltaSeconds(fitLocalClock(fitSession.localStart), clock));
+  if (fitSession) {
+    if (sample.sportStart?.clock) {
+      return Math.round(fitSession.start + localDeltaSeconds(fitLocalClock(fitSession.localStart), clock));
+    }
+    const range = sampleClockRange(sample);
+    if (!range) return null;
+    return Math.round(fitSession.end + localDeltaSeconds(range.end, clock));
+  }
   if (Number.isFinite(sample.rtcStart) && sample.sportStart?.clock) {
     return Math.round(sample.rtcStart + localDeltaSeconds(sample.sportStart.clock, clock));
   }
   const dateMatch = sample.name.match(/(20\d{2})(\d{2})(\d{2})/);
-  const startClock = sample.sportStart?.clock || sample.rows[0]?.clock;
+  const startClock = sample.sportStart?.clock || sampleClockRange(sample)?.start;
   if (!startClock) return null;
   const baseDate = dateMatch
     ? [Number(dateMatch[1]), Number(dateMatch[2]) - 1, Number(dateMatch[3])]
@@ -505,13 +541,30 @@ function analyze({ logs, fits }) {
 
   if (fitSessions.length) {
     fitSessions.sort((a, b) => a.start - b.start);
+    const endFallbackFits = new Map();
+    for (const sample of logSamples.filter((entry) => !hasReliableSampleStart(entry))) {
+      const endCandidates = fitSessions
+        .map((session) => ({ session, delta: sampleSessionEndDifferenceSeconds(sample, session) }))
+        .filter((entry) => entry.delta <= LOG_FIT_END_TIME_TOLERANCE_SECONDS);
+      if (endCandidates.length === 1) {
+        endFallbackFits.set(sample, endCandidates[0].session);
+      } else if (endCandidates.length > 1) {
+        issues.push({
+          code: 'AMBIGUOUS_LOG_FIT_END_MATCH',
+          message: `日志样本 ${sample.name} 缺少可靠开始时间，结束时间同时匹配多个 FIT 运动，未自动合并：${endCandidates.map((entry) => entry.session.filename).join('、')}`,
+        });
+      }
+    }
     for (const session of fitSessions) {
       const candidates = logSamples.filter((sample) => !usedLogs.has(sample))
+        .filter((sample) => hasReliableSampleStart(sample))
         .map((sample) => ({ sample, delta: sampleSessionStartDifferenceSeconds(sample, session) }))
       .filter((entry) => entry.delta <= 30)
         .sort((a, b) => a.delta - b.delta);
       const bestDelta = candidates[0]?.delta;
       const matching = candidates.filter((entry) => entry.delta - bestDelta <= 1);
+      logSamples.filter((sample) => !usedLogs.has(sample) && endFallbackFits.get(sample) === session)
+        .forEach((sample) => matching.push({ sample, delta: sampleSessionEndDifferenceSeconds(sample, session), matchMethod: 'end-time-fallback' }));
       if (!matching.length) {
         const sample = { name: session.filename, userInfo: null, alg: null, sdkVersion: null, startFitLtPace: null, startFitLtHr: null, outputEvidence: {}, workoutType: -1, timezoneMinutes: session.timezoneMinutes };
         const merged = makeCsv(sample, session, []);
@@ -520,13 +573,14 @@ function analyze({ logs, fits }) {
         continue;
       }
       matching.forEach((entry) => usedLogs.add(entry.sample));
+      const matchMethod = matching.some((entry) => entry.matchMethod === 'end-time-fallback') ? 'end-time-fallback' : 'start-time';
       const primary = matching.find((entry) => entry.sample.userInfo)?.sample || matching[0].sample;
       const merged = makeCsv(primary, session, matching.map((entry) => ({ sample: entry.sample })));
       const estimate = calculateEstimate(primary, merged.rows);
       const previewRows = [CSV_HEADER, ...merged.rows.slice(0, 10)];
       const csv = [CSV_HEADER, ...merged.rows].map((row) => row.map(csvEscape).join(',')).join('\r\n') + '\r\n';
       const percentage = merged.logCount ? Math.round(merged.matchCount / merged.logCount * 100) : 0;
-      results.push({ userInfo: primary.userInfo, userInfoSource: primary.userInfoSource, profileMissing: !primary.userInfo, alg: primary.alg, sdkVersion: primary.sdkVersion, startFitLtPace: primary.startFitLtPace, startFitLtHr: primary.startFitLtHr, outputEvidence: primary.outputEvidence, estimate, filename: `gomore_data_${filenameTimestamp(session.start, session.timezoneMinutes)}.csv`, csv, preview: previewRows, rowCount: merged.rows.length, sources: [session.filename, ...matching.map((entry) => entry.sample.name)], matchRate: percentage, fitOnlyCount: merged.fitOnlyCount, logOnlyCount: merged.logOnlyCount, statusFilteredCount: merged.statusFilteredCount, startTimestamp: session.start, startTime: formatLocalDateTime(session.start, session.timezoneMinutes) });
+      results.push({ userInfo: primary.userInfo, userInfoSource: primary.userInfoSource, profileMissing: !primary.userInfo, alg: primary.alg, sdkVersion: primary.sdkVersion, startFitLtPace: primary.startFitLtPace, startFitLtHr: primary.startFitLtHr, outputEvidence: primary.outputEvidence, estimate, filename: `gomore_data_${filenameTimestamp(session.start, session.timezoneMinutes)}.csv`, csv, preview: previewRows, rowCount: merged.rows.length, sources: [session.filename, ...matching.map((entry) => entry.sample.name)], matchRate: percentage, matchMethod, fitOnlyCount: merged.fitOnlyCount, logOnlyCount: merged.logOnlyCount, statusFilteredCount: merged.statusFilteredCount, startTimestamp: session.start, startTime: formatLocalDateTime(session.start, session.timezoneMinutes) });
     }
     logSamples.filter((sample) => !usedLogs.has(sample)).forEach((sample) => {
       const output = makeCsv(sample);

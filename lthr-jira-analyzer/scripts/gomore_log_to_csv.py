@@ -33,6 +33,7 @@ import csv
 import time
 import argparse
 import calendar
+import math
 from datetime import datetime
 from typing import List, Tuple
 import json
@@ -325,6 +326,52 @@ def extract_userinfo_in_range(content: str, start_pos: int = 0, end_pos: int = N
     if c_matches:
         return extract_userinfo_from_old_log(c_matches[-1].group(0))
     return ''
+
+
+def _normalize_userinfo(userinfo: str) -> str:
+    """Return a normalized seven-field profile, or empty when required fields are missing."""
+    if not userinfo:
+        return ''
+
+    fields = userinfo.split(',')[:7]
+    if len(fields) < 4:
+        return ''
+    fields.extend(['-1'] * (7 - len(fields)))
+
+    values = []
+    for field in fields:
+        try:
+            value = float(field.strip())
+        except (TypeError, ValueError):
+            value = -1.0
+        if not math.isfinite(value):
+            value = -1.0
+        values.append(value)
+
+    age, gender, height, weight = values[:4]
+    if age <= 0 or not age.is_integer() or gender not in (0.0, 1.0) or height <= 0 or weight <= 0:
+        return ''
+
+    # GoMore treats nonpositive optional values as absent.
+    for idx in range(4, 7):
+        if values[idx] <= 0:
+            values[idx] = -1.0
+    return ','.join(f'{value:.1f}' for value in values)
+
+
+def _resolve_userinfo_fallback(parsed_userinfo: str, userinfo_arg: str,
+                               userinfo_arg_explicit: bool) -> Tuple[str, str]:
+    parsed = _normalize_userinfo(parsed_userinfo)
+    if parsed:
+        return parsed, '整份日志其他位置（回退）'
+
+    if userinfo_arg_explicit:
+        explicit = _normalize_userinfo(userinfo_arg)
+        if explicit:
+            return explicit, '命令行 --user-info 参数'
+
+    default = _normalize_userinfo(DEFAULT_USERINFO)
+    return default, f'脚本默认值（{DEFAULT_USERINFO}）'
 
 
 # 算法输出解析正则
@@ -846,17 +893,14 @@ JSON 输出（--json）示例：
 
     # 试着从旧日志或 ALG_GM c 字段解析 userInfo（优先于后续输出分支）
     parsed_userinfo = extract_userinfo_from_old_log(content)
-    userinfo_found = bool(parsed_userinfo)
-    global_userinfo_source = (
-        '整份日志其他位置（回退）' if parsed_userinfo
-        else '命令行 --user-info 参数' if userinfo_arg_explicit
-        else f'脚本默认值（{DEFAULT_USERINFO}）'
+    userinfo_arg, global_userinfo_source = _resolve_userinfo_fallback(
+        parsed_userinfo, userinfo_arg, userinfo_arg_explicit
     )
-    if parsed_userinfo:
-        userinfo_arg = parsed_userinfo
-        if debug:
-            print(f"[DEBUG] Parsed userInfo early (before segmentation): {parsed_userinfo}", flush=True)
-            print(f"[DEBUG] Matched line: {LAST_PARSED_USERINFO_LINE}", flush=True)
+    if debug and _normalize_userinfo(parsed_userinfo):
+        print(f"[DEBUG] Parsed userInfo early (before segmentation): {userinfo_arg}", flush=True)
+        print(f"[DEBUG] Matched line: {LAST_PARSED_USERINFO_LINE}", flush=True)
+    elif debug and parsed_userinfo:
+        print(f"[DEBUG] Ignoring invalid userInfo; using {global_userinfo_source}", flush=True)
 
     # debug: total candidates in content
     if debug:
@@ -902,8 +946,13 @@ JSON 输出（--json）示例：
             if debug:
                 print(f"[DEBUG] Segment #{idx}: start={start_pos} end={end_pos} rtc={rtc_anchor} tz={tz_anchor} time_anchor={time_anchor_pos} rows_in_seg={len(seg)} algs_in_seg={len(algs_in_seg)}", flush=True)
             total_covered += len(seg)
-            sample_userinfo = extract_userinfo_in_range(content, start_pos, end_pos)
-            sample_userinfo_source = '该运动段关联日志范围（含前序上下文）' if sample_userinfo else global_userinfo_source
+            sample_userinfo = _normalize_userinfo(
+                extract_userinfo_in_range(content, start_pos, end_pos)
+            )
+            sample_userinfo_source = (
+                '该运动段关联日志范围（含前序上下文）' if sample_userinfo
+                else global_userinfo_source
+            )
             if not sample_userinfo:
                 sample_userinfo = userinfo_arg
             sample_userinfo_found = not sample_userinfo_source.startswith('脚本默认值')
@@ -1027,19 +1076,18 @@ JSON 输出（--json）示例：
 
     # 优先使用日志中旧格式的 _gomoreSdkConfig 提供的 userInfo（若存在）
     parsed_userinfo = extract_userinfo_from_old_log(content)
-    userinfo_found = bool(parsed_userinfo)
-    if parsed_userinfo:
-        userinfo_arg = parsed_userinfo
-        if debug:
-            print(f"[DEBUG] Parsed userInfo from _gomoreSdkConfig: {parsed_userinfo}", flush=True)
-            try:
-                from inspect import cleandoc
-            except Exception:
-                pass
-            print(f"[DEBUG] Matched line: {LAST_PARSED_USERINFO_LINE}", flush=True)
-    else:
-        if debug:
-            print('[DEBUG] No _gomoreSdkConfig line parsed for userInfo', flush=True)
+    userinfo_arg, global_userinfo_source = _resolve_userinfo_fallback(
+        parsed_userinfo, userinfo_arg, userinfo_arg_explicit
+    )
+    if debug and _normalize_userinfo(parsed_userinfo):
+        print(f"[DEBUG] Parsed userInfo from _gomoreSdkConfig: {userinfo_arg}", flush=True)
+        print(f"[DEBUG] Matched line: {LAST_PARSED_USERINFO_LINE}", flush=True)
+    elif debug:
+        message = (
+            f"Ignoring invalid userInfo; using {global_userinfo_source}"
+            if parsed_userinfo else 'No valid _gomoreSdkConfig userInfo; using fallback'
+        )
+        print(f'[DEBUG] {message}', flush=True)
 
     # 根据 ALG_GM 输出决定是否拆分为多个 CSV（即使只有1个，如果有多个segments也应该拆分）
     if alg_results and len(alg_results) >= 1:
@@ -1094,8 +1142,13 @@ JSON 输出（--json）示例：
             if debug:
                 print(f"[DEBUG] segment #{idx} has {len(seg)} rows; first pos={seg[0]['pos']}, first_utc={seg[0]['utc']}", flush=True)
             segments_covered += len(seg)
-            sample_userinfo = extract_userinfo_in_range(content, seg[0]['pos'], seg[-1]['pos'] + 1)
-            sample_userinfo_source = '该运动段关联日志范围（含前序上下文）' if sample_userinfo else global_userinfo_source
+            sample_userinfo = _normalize_userinfo(
+                extract_userinfo_in_range(content, seg[0]['pos'], seg[-1]['pos'] + 1)
+            )
+            sample_userinfo_source = (
+                '该运动段关联日志范围（含前序上下文）' if sample_userinfo
+                else global_userinfo_source
+            )
             if not sample_userinfo:
                 sample_userinfo = userinfo_arg
             sample_userinfo_found = not sample_userinfo_source.startswith('脚本默认值')
@@ -1195,7 +1248,9 @@ JSON 输出（--json）示例：
     # Resolve absolute path and write
     outfile = os.path.abspath(outfile)
     tuples = rows_with_active_timestamps(rows, content, input_name)
-    single_userinfo = extract_userinfo_in_range(content, 0, len(content))
+    single_userinfo = _normalize_userinfo(
+        extract_userinfo_in_range(content, 0, len(content))
+    )
     single_userinfo_source = '本次解析日志范围' if single_userinfo else global_userinfo_source
     if not single_userinfo:
         single_userinfo = userinfo_arg
@@ -1237,7 +1292,7 @@ JSON 输出（--json）示例：
         print('\n' + '='*40, flush=True)
         print('Result #1', flush=True)
         print('-' * 40, flush=True)
-        print(f'UserInfo: {userinfo_arg}', flush=True)
+        print(f'UserInfo: {single_userinfo}', flush=True)
         print(f'UserInfo source: {single_userinfo_source}', flush=True)
         if alg_results:
             for i, r in enumerate(alg_results, start=1):
