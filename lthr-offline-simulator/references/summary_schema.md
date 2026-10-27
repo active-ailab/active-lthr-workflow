@@ -5,8 +5,8 @@
 ## 顶层公共字段
 
 - `schema_version`: 当前统一摘要结构版本，现为 `lthr-summary-v1`
-- `workflow`: 工作流类型，当前包括 `single_sample`、`multi_sample`、`utest_only`、`img_extract`
-- `status`: 当前工作流状态，如 `completed`、`deploy_only_completed`、`test_timeout`
+- `workflow`: 工作流类型，当前包括 `single_sample`、`multi_sample`、`img_extract`
+- `status`: 当前工作流状态；配置驱动仿真为 `success`、`partial` 或 `failed`，其他工作流保留各自状态
 - `primary_error_code`: 主错误码，正常完成时为空
 - `error_codes`: 诊断命中的全部错误码列表
 - `runtime_hint`: 合并后的 `[HINT][E_*]` 提示文本
@@ -14,6 +14,9 @@
 - `artifacts`: 标准化产物路径集合
 - `metrics`: 标准化指标集合
 - `issue`: 仅单样本/Jira 链路需要时填充
+- `attachment_run_mode`: Jira 多附件处理方式；`single_attachment`、`sequential` 或 `single_person_multi_sample`
+- `simulation_mode`: C 端配置模式，例如 `single_sample` 或 `single_person_multi_sample`
+- `metrics.utest_invocations`: 本次外层工作流实际启动的 UTest 次数；deploy-only 为 0
 
 ## 兼容策略
 
@@ -28,11 +31,10 @@
 3. 再看 `artifacts` 和 `metrics`
 4. 最后才看各脚本保留的历史字段
 
-补充说明：`multi_sample` 消费端应优先信任标准化后的 `status` / `metrics`，不要自行用 raw UART log 是否命中 `GoMore Offline CSV Test Start` 来重判。真实设备日志可能缺失 start marker，但解析器会根据样本进度、样本结果、summary 或 `GoMore Offline CSV Test End` 识别测试活动。
+补充说明：配置驱动仿真以 `sim_result.ini` 中校验后的状态和样本条目为准。新 UTest 日志标记为 `GoMore Offline CSV Simulation Start/End`；未观察到结束标记时，Python runner 不挂载提取正在写入的设备产物。
 
 ## 当前 artifact 约定
 
 - `single_sample`: `report_path` / `json_path` / `log_path`
 - `multi_sample`: `json_path` / `log_path`，如果带 IMG 提取则额外有 `img_report_path` / `img_summary_json_path` / `img_batches_json_path`
-- `utest_only`: `summary_path` / `json_path` / `log_path`
 - `img_extract`: `report_path` / `summary_json_path` / `batches_json_path`

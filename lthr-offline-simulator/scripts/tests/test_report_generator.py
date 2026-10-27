@@ -32,7 +32,7 @@ class ReportGeneratorTests(unittest.TestCase):
         self.assertIn("meta_count=1", windows)
         self.assertEqual(format_duration(3661), "1h01m01s")
 
-    def test_build_comment_and_report_include_issue_and_sample(self) -> None:
+    def test_build_comment_includes_sample_and_report_includes_issue(self) -> None:
         sample = {
             "sample_csv": "gomore_data_1.csv",
             "gomore_root": "/mnt/test/gomore",
@@ -48,7 +48,7 @@ class ReportGeneratorTests(unittest.TestCase):
         comment = build_comment(issue, [sample], ["report.md"], "gpt-test")
         report = build_report_markdown(issue, [sample], "raw.log", "gpt-test")
 
-        self.assertIn("MOD-1", comment)
+        self.assertIn("乳酸阈离线仿真结果", comment)
         self.assertIn("gomore_data_1.csv", comment)
         self.assertIn("# LTHR Offline Simulation Report", report)
         self.assertIn("Issue: MOD-1", report)

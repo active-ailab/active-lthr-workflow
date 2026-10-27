@@ -54,6 +54,8 @@ def build_comment(
         lines.append(
             f"* Sample: {sample['sample_csv']} | runs={len(results)} | success={len(ok_results)} | stability={sample['stability']}"
         )
+        if sample.get("error"):
+            lines.append(f"  - Simulation Error: {sample['error']}")
         if sample.get("mode") == "deploy_only":
             lines.append("  - Deployment verified only; UART utest skipped")
             continue
@@ -98,10 +100,14 @@ def build_report_markdown(
     for index, sample in enumerate(sample_summaries, 1):
         lines.append(f"## {index}. {sample['sample_csv']}")
         lines.append(f"- Gomore Root: {sample['gomore_root']}")
+        if sample.get("attachment_run_mode"):
+            lines.append(f"- Attachment Run Mode: {sample['attachment_run_mode']}")
         if sample.get("mode") == "deploy_only":
             lines.append("- Mode: deploy-only (skipped UART utest)")
         lines.append(f"- Runs: {len(sample['results'])}")
         lines.append(f"- Stability: {sample['stability']}")
+        if sample.get("error"):
+            lines.append(f"- Simulation Error: {sample['error']}")
         cleanup = sample.get("cleanup") or {}
         if cleanup:
             lines.append(f"- Deleted CSV Count: {len(cleanup.get('deleted_csvs', []))}")

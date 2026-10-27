@@ -30,30 +30,27 @@ class MultiSimSupportTests(unittest.TestCase):
             resolved = resolve_data_sample_dir(str(data_dir), Path("/tmp/ignored.py"))
             self.assertEqual(resolved, data_dir.resolve())
 
-    def test_resolve_data_sample_dir_uses_default_repo_layout(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            lyon_root = Path(tmp) / "Lyon"
-            script_path = lyon_root / "skills" / "lthr-offline-simulator" / "scripts" / "run_device_multi_sim.py"
-            script_path.parent.mkdir(parents=True, exist_ok=True)
-            script_path.write_text("# stub\n", encoding="utf-8")
-            data_dir = lyon_root / "framework" / "engine" / "sportEngine" / "alg_gomore" / "data_sample"
-            data_dir.mkdir(parents=True, exist_ok=True)
-            resolved = resolve_data_sample_dir("", script_path)
-            self.assertEqual(resolved, data_dir.resolve())
+    def test_resolve_data_sample_dir_requires_explicit_path(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "--data-dir"):
+            resolve_data_sample_dir("", Path("/tmp/run_device_multi_sim.py"))
 
     def test_collect_and_print_data_sample_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data_sample"
             nested = data_dir / "nested"
             nested.mkdir(parents=True, exist_ok=True)
-            (data_dir / "a.csv").write_text("a", encoding="utf-8")
-            (nested / "b.csv").write_text("b", encoding="utf-8")
+            (data_dir / "gomore_data_20260515_120000.csv").write_text("a", encoding="utf-8")
+            (nested / "gomore_data_20260516_120000.csv").write_text("b", encoding="utf-8")
+            (data_dir / "ignored.csv").write_text("ignored", encoding="utf-8")
             csv_files = collect_data_sample_csvs(data_dir)
             lines = []
             print_data_sample_inventory(data_dir, csv_files, print_fn=lines.append, preview_limit=1)
-            self.assertEqual([path.name for path in csv_files], ["a.csv", "b.csv"])
+            self.assertEqual([path.name for path in csv_files], [
+                "gomore_data_20260515_120000.csv",
+                "gomore_data_20260516_120000.csv",
+            ])
             self.assertIn("[信息] 待拷贝 CSV: 2 个", lines)
-            self.assertIn("       a.csv", lines)
+            self.assertIn("       gomore_data_20260515_120000.csv", lines)
             self.assertIn("       ... 及其他 1 个", lines)
 
     def test_init_summary_helpers_seed_expected_fields(self) -> None:

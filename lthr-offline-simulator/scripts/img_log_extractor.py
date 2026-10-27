@@ -25,6 +25,7 @@ from shared.img_extract_support import (
     init_img_extract_summary,
     resolve_default_output_dir,
 )
+from shared.offline_sim_contract import END_MARKER, SAMPLE_PROGRESS_RE, START_MARKER
 from shared.watchlink_runtime import (
     WatchlinkDevice,
     _safe_reconfigure_stdio,
@@ -39,17 +40,16 @@ from shared.workflow_reporter import write_json_summary
 from disk_utils import select_log_root
 
 # ── 日志标记常量 ──
-START_MARKER = "GoMore Offline CSV Test Start"
-END_MARKER = "GoMore Offline CSV Test End"
 RESULT_RE = re.compile(
     r"Gomore output ltSpeed=(?P<ltSpeed>[-+]?\d+(?:\.\d+)?) "
     r"lh=(?P<lh>-?\d+) mh=(?P<mh>-?\d+) guideResult=(?P<guideResult>-?\d+)"
 )
-ROUND_RE = re.compile(r"Round\s*(\d+)\s*/\s*(\d+)")
-SAMPLE_PROGRESS_RE = re.compile(r"SAMPLE\s*\[\s*(\d+)\s*/\s*(\d+)\s*\]")
-SAMPLE_RESULT_RE = re.compile(r"Sample\[(\d+)/(\d+)\]\s+(PASS|FAIL)")
-SUMMARY_RE = re.compile(r"All sample cases completed:\s*total=(\d+),\s*failed=(\d+)")
-COLLECTED_RE = re.compile(r"Collected sample summary:\s*total=(\d+)\s+root=(\d+)\s+base=(\d+)\s+jira=(\d+)")
+ROUND_RE = re.compile(r"round\s+(\d+)\s*/\s*(\d+)\s*,\s*start=", re.IGNORECASE)
+SAMPLE_ERROR_RE = re.compile(
+    r"Sample error:\s*sample=(\d+).*?round=(\d+).*?stage=(\S+)\s+reason=(\S+)\s+code=(-?\d+)",
+    re.IGNORECASE,
+)
+SUMMARY_RE = re.compile(r"Simulation completed:.*?status=(success|partial|failed)", re.IGNORECASE)
 
 
 def _find_test_start_line(lines: List[str]) -> Optional[int]:
@@ -62,7 +62,7 @@ def _find_test_start_line(lines: List[str]) -> Optional[int]:
         if any((
             SAMPLE_PROGRESS_RE.search(line),
             ROUND_RE.search(line),
-            SAMPLE_RESULT_RE.search(line),
+            SAMPLE_ERROR_RE.search(line),
             SUMMARY_RE.search(line),
             END_MARKER in line,
         )):
@@ -104,117 +104,132 @@ def parse_img_logs(log_paths: List[Path]) -> List[Dict]:
     batches: List[Dict] = []
     current_batch: Optional[Dict] = None
     current_sample: Optional[Dict] = None
+    current_round = 0
+
+    def _finish_batch(batch: Dict) -> None:
+        sample_map = batch.pop("_sample_map", {})
+        batch["samples"] = [sample_map[idx] for idx in sorted(sample_map)]
+        batch["passed"] = sum(item["status"] == "success" for item in batch["samples"])
+        batch["failed"] = sum(item["status"] not in {"success", "unknown"} for item in batch["samples"])
+        if batch.get("overall_status") == "success":
+            for item in batch["samples"]:
+                if item["status"] == "unknown":
+                    item["status"] = "success"
+            batch["passed"] = sum(item["status"] == "success" for item in batch["samples"])
+            batch["failed"] = len(batch["samples"]) - batch["passed"]
+        batch["sample_count"] = len(batch["samples"])
+        batches.append(batch)
 
     for log_path in log_paths:
         print(f"[解析] 读取 {log_path.name}...")
         lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
 
         for line_no, line in enumerate(lines, 1):
-            # Test Start → 新批次开始
             if START_MARKER in line:
-                if current_batch is not None and current_sample is not None:
-                    current_batch.setdefault("samples", []).append(current_sample)
-                    current_sample = None
                 if current_batch is not None:
-                    batches.append(current_batch)
+                    _finish_batch(current_batch)
                 current_batch = {
                     "batch_index": len(batches) + 1,
                     "start_line": line_no,
                     "total": 0,
                     "failed": 0,
                     "passed": 0,
-                    "collected": None,
+                    "overall_status": "unknown",
                     "samples": [],
+                    "_sample_map": {},
                     "log_file": log_path.name,
                 }
                 current_sample = None
+                current_round = 0
                 continue
 
             if current_batch is None:
                 continue
 
-            # Collected sample summary
-            m = COLLECTED_RE.search(line)
-            if m:
-                current_batch["collected"] = {
-                    "total": int(m.group(1)),
-                    "root": int(m.group(2)),
-                    "base": int(m.group(3)),
-                    "jira": int(m.group(4)),
-                }
+            progress = SAMPLE_PROGRESS_RE.search(line)
+            if progress:
+                sample_index = int(progress.group("sample"))
+                sample_total = int(progress.group("sample_total"))
+                current_round = int(progress.group("round"))
+                current_batch["rounds"] = int(progress.group("round_total"))
+                current_batch["total"] = sample_total
+                current_sample = current_batch["_sample_map"].setdefault(sample_index, {
+                    "sample_idx": sample_index,
+                    "total": sample_total,
+                    "status": "unknown",
+                    "rounds_seen": [],
+                    "alg_outputs": [],
+                })
+                current_sample["rounds_seen"].append(current_round)
                 continue
 
-            # 算法输出
-            m = RESULT_RE.search(line)
-            if m:
-                current_batch.setdefault("_alg_outputs", []).append({
-                    "ltSpeed": float(m.group("ltSpeed")),
-                    "lh": int(m.group("lh")),
-                    "mh": int(m.group("mh")),
-                    "guideResult": int(m.group("guideResult")),
+            sample_error = SAMPLE_ERROR_RE.search(line)
+            if sample_error:
+                sample_index = int(sample_error.group(1))
+                error_sample = current_batch["_sample_map"].setdefault(sample_index, {
+                    "sample_idx": sample_index,
+                    "total": current_batch["total"],
+                    "status": "unknown",
+                    "rounds_seen": [],
+                    "alg_outputs": [],
+                })
+                error_sample.update({
+                    "status": "input_error" if sample_error.group(3).lower() == "csv" else "execution_error",
+                    "stopped_round": int(sample_error.group(2)),
+                    "error_stage": sample_error.group(3),
+                    "error_reason": sample_error.group(4),
+                    "error_code": int(sample_error.group(5)),
+                })
+                current_sample = error_sample
+                continue
+
+            overall = SUMMARY_RE.search(line)
+            if overall:
+                current_batch["overall_status"] = overall.group(1).lower()
+                continue
+
+            result = RESULT_RE.search(line)
+            if result and current_sample is not None:
+                current_sample["alg_outputs"].append({
+                    "round": current_round,
+                    "ltSpeed": float(result.group("ltSpeed")),
+                    "lh": int(result.group("lh")),
+                    "mh": int(result.group("mh")),
+                    "guideResult": int(result.group("guideResult")),
                 })
                 continue
 
-            # Sample PASS/FAIL
-            m = SAMPLE_RESULT_RE.search(line)
-            if m:
-                samp_idx = int(m.group(1))
-                samp_total = int(m.group(2))
-                samp_status = m.group(3)
-
-                current_batch["total"] = max(current_batch["total"], samp_total)
-                alg_outs = current_batch.pop("_alg_outputs", [])
-                if current_sample is not None:
-                    current_batch.setdefault("samples", []).append(current_sample)
-
-                current_sample = {
-                    "sample_idx": samp_idx,
-                    "total": samp_total,
-                    "status": samp_status,
-                    "alg_outputs": alg_outs,
-                }
-                continue
-
-            # All sample cases completed
-            m = SUMMARY_RE.search(line)
-            if m:
-                current_batch["failed"] = int(m.group(2))
-                current_batch["passed"] = int(m.group(1)) - int(m.group(2))
-
-                # 完成当前样本和批次
-                if current_sample is not None:
-                    current_batch.setdefault("samples", []).append(current_sample)
-                    current_sample = None
-                current_batch["_alg_outputs"] = []
-                continue
-
-            # Test End → 关闭当前批次
             if END_MARKER in line:
-                current_batch.setdefault("samples", [])
-                current_batch.setdefault("_alg_outputs", [])
-                if current_batch["samples"]:
-                    batches.append(current_batch)
-                else:
-                    # 空的批次(无样本), 丢弃
-                    pass
+                for item in current_batch["_sample_map"].values():
+                    if item["status"] == "unknown":
+                        completed_rounds = len(set(item["rounds_seen"]))
+                        if (
+                            current_batch.get("overall_status") == "success"
+                            or completed_rounds >= int(current_batch.get("rounds", 0))
+                        ):
+                            item["status"] = "success"
+                        else:
+                            item["status"] = "stopped"
+                _finish_batch(current_batch)
                 current_batch = None
                 current_sample = None
-                continue
+                current_round = 0
 
-        # 文件结束, 如果有未关闭的批次
         if current_batch is not None:
-            # 丢弃不完整的批次
+            # An IMG log without the end marker is incomplete and is not summarized as a finished run.
             current_batch = None
             current_sample = None
+            current_round = 0
 
     print(f"[解析] 共检测到 {len(batches)} 个测试批次")
     for batch in batches:
         n = len(batch.get("samples", []))
-        c = batch.get("collected") or {}
-        print(f"  批次{batch['batch_index']}: {n} 样本 ({n}/{batch['total']}), "
-              f"PASS={n - batch['failed']}, FAIL={batch['failed']} "
-              f"(base={c.get('base', '?')} jira={c.get('jira', '?')})")
-
+        print(
+            "  Batch {}: samples={}/{} status={} PASS={} FAIL={}".format(
+                batch["batch_index"], n, batch.get("total", 0), batch.get("overall_status"),
+                batch.get("passed", 0), batch.get("failed", 0),
+            )
+        )
     return batches
 
 
@@ -234,8 +249,14 @@ def print_batch_summary(batches: List[Dict]) -> str:
                          f"root={collected.get('root','?')} "
                          f"base={collected.get('base','?')} "
                          f"jira={collected.get('jira','?')}")
-        lines.append(f"  结果: {batch['passed']}/{batch['total']} PASS, "
-                     f"{batch['failed']} FAILED")
+        lines.append(
+            "  结果: overall_status={} 样本成功={}/{} 异常或未完成={}".format(
+                batch.get("overall_status", "unknown"),
+                batch.get("passed", 0),
+                batch.get("total", 0),
+                batch.get("failed", 0),
+            )
+        )
 
         for s in samples:
             outs = s.get("alg_outputs", [])
@@ -282,7 +303,12 @@ def build_img_report_markdown(
                     f"base={collected.get('base', '?')} jira={collected.get('jira', '?')}"
                 )
             batch_sections.append(
-                f"- Result: PASS={batch.get('passed', 0)} FAIL={batch.get('failed', 0)} / total={batch.get('total', 0)}"
+                "- Result: overall_status={} success={} failed_or_stopped={} / total={}".format(
+                    batch.get("overall_status", "unknown"),
+                    batch.get("passed", 0),
+                    batch.get("failed", 0),
+                    batch.get("total", 0),
+                )
             )
             samples = batch.get("samples") or []
             if samples:

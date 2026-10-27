@@ -5,16 +5,14 @@ import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
+from .offline_sim_contract import END_MARKER, SAMPLE_PROGRESS_RE, START_MARKER, TEST_COMMAND
 from .utest_runner import listen_uart, send_uart_cmd
 
 
-START_MARKER = "GoMore Offline CSV Test Start"
-END_MARKER = "GoMore Offline CSV Test End"
-
-RE_SAMPLE_PROGRESS = re.compile(r"SAMPLE\s*\[\s*(\d+)\s*/\s*(\d+)\s*\]")
-RE_ROUND_PROGRESS = re.compile(r"Round\s*(\d+)\s*/\s*(\d+)")
-RE_SAMPLE_RESULT = re.compile(r"Sample\[\d+/\d+\]\s+(PASS|FAIL)")
-RE_SUMMARY = re.compile(r"All sample cases completed:\s*total=(\d+),\s*failed=(\d+)")
+RE_SAMPLE_PROGRESS = SAMPLE_PROGRESS_RE
+RE_ROUND_PROGRESS = re.compile(r"round\s+(\d+)/(\d+),\s*start=", re.IGNORECASE)
+RE_SAMPLE_RESULT = re.compile(r"sample\.(\d+)\.status=(success|input_error|execution_error|stopped)", re.IGNORECASE)
+RE_SUMMARY = re.compile(r"Simulation completed:.*status=(success|partial|failed)", re.IGNORECASE)
 
 
 SendUartFn = Callable[[Path, str, str, int], str]
@@ -78,8 +76,8 @@ def init_progress(*, total_rounds: int = 3) -> Dict[str, int]:
 def update_progress(progress: Dict[str, int], chunk: str) -> Dict[str, int]:
     sample_match = RE_SAMPLE_PROGRESS.search(chunk)
     if sample_match:
-        progress["current_sample"] = int(sample_match.group(1))
-        progress["total_samples"] = int(sample_match.group(2))
+        progress["current_sample"] = int(sample_match.group("sample"))
+        progress["total_samples"] = int(sample_match.group("sample_total"))
 
     round_match = RE_ROUND_PROGRESS.search(chunk)
     if round_match:
@@ -87,7 +85,7 @@ def update_progress(progress: Dict[str, int], chunk: str) -> Dict[str, int]:
         progress["total_rounds"] = int(round_match.group(2))
 
     for result_match in RE_SAMPLE_RESULT.finditer(chunk):
-        if result_match.group(1) == "PASS":
+        if result_match.group(2).lower() == "success":
             progress["passed"] += 1
         else:
             progress["failed"] += 1
@@ -95,14 +93,13 @@ def update_progress(progress: Dict[str, int], chunk: str) -> Dict[str, int]:
 
 
 def collect_summary_counts(full_log: str, progress: Dict[str, int]) -> Dict[str, int]:
-    summary_match = RE_SUMMARY.search(full_log)
-    if summary_match:
-        total_samples = int(summary_match.group(1))
-        failed = int(summary_match.group(2))
+    statuses = RE_SAMPLE_RESULT.findall(full_log)
+    if statuses:
+        failed = sum(status.lower() != "success" for _index, status in statuses)
         return {
-            "total_samples": total_samples,
+            "total_samples": len(statuses),
             "failed": failed,
-            "passed": total_samples - failed,
+            "passed": len(statuses) - failed,
         }
     return {
         "total_samples": progress["total_samples"],
@@ -128,7 +125,7 @@ def run_multi_sample_simulation(
 
     initial = send_uart_cmd_fn(
         wlctl_path,
-        "utest gomore_offline_csv_multi_tests",
+        TEST_COMMAND,
         uart_port,
         2000,
     )

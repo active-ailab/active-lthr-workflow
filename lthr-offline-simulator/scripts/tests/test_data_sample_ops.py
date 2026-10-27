@@ -14,7 +14,7 @@ from shared import data_sample_ops  # noqa: E402
 
 
 class DataSampleOpsTests(unittest.TestCase):
-    def test_clean_and_copy_single_sample_renames_nonstandard_csv(self) -> None:
+    def test_clean_and_copy_single_sample_preserves_existing_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             data_root = tmp_path
@@ -36,9 +36,9 @@ class DataSampleOpsTests(unittest.TestCase):
             copied_path = Path(cleanup["copied_sample"][0])
             self.assertEqual(copied_path.name, "gomore_data_20260515_120000.csv")
             self.assertTrue(copied_path.exists())
-            self.assertFalse((gomore_root / "data_sample" / "old.csv").exists())
-            self.assertFalse((gomore_root / "gomore_his.data").exists())
-            self.assertFalse((gomore_root / "lactateData.data").exists())
+            self.assertTrue((gomore_root / "data_sample" / "old.csv").exists())
+            self.assertTrue((gomore_root / "gomore_his.data").exists())
+            self.assertTrue((gomore_root / "lactateData.data").exists())
 
     def test_verify_single_sample_deployment_accepts_clean_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -72,7 +72,7 @@ class DataSampleOpsTests(unittest.TestCase):
             self.assertEqual(payload["latest_csv"], str(copied_sample))
             self.assertEqual(payload["state_file_count"], 0)
 
-    def test_deploy_data_sample_tree_copies_nested_csvs_and_clears_state(self) -> None:
+    def test_deploy_data_sample_tree_copies_nested_csvs_and_preserves_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             data_root = tmp_path
@@ -91,6 +91,6 @@ class DataSampleOpsTests(unittest.TestCase):
 
             self.assertEqual(payload["csv_count"], 1)
             self.assertEqual(payload["meta_count"], 1)
-            self.assertEqual(payload["state_file_count"], 0)
+            self.assertEqual(payload["state_file_count"], 2)
             self.assertIn("nested/gomore_data_20260515_120000.csv", payload["copied_csv_relative_paths"])
-            self.assertFalse((gomore_root / "data_sample" / "stale" / "old.csv").exists())
+            self.assertTrue((gomore_root / "data_sample" / "stale" / "old.csv").exists())

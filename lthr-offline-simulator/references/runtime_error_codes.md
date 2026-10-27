@@ -9,7 +9,7 @@
 - `E_SERIAL_PORT_CLOSED`: MGR 通道关闭、掉线或部署阶段串口失效。
 - `E_DATA_ROOT_DETECT`: Windows data-root 未出现、出现多个候选，或 WSL 仍落回 legacy 挂载路径。
 - `E_UART_PORT_PROBE`: UART 候选口探测失败，当前端口对不可信。
-- `E_UTEST_START_MISSING`: 在观察窗口内没有看到任何测试活动，通常意味着 CSV/历史状态文件未就绪。对 `multi_sample` 而言，只要已出现样本进度、样本 PASS/FAIL、summary 或 end marker，就不应再归类为这个错误，即使 `GoMore Offline CSV Test Start` 缺失。
+- `E_UTEST_START_MISSING`: 在观察窗口内没有看到 `GoMore Offline CSV Simulation Start` 或样本进度，通常意味着命令未启动或 UART 未接通。
 - `E_UTEST_TIMEOUT`: utest 启动后未在预期窗口完成。
 - `E_DEVICE_READY_TIMEOUT`: deploy 后设备没有恢复到 launcher-ready 或 shell-ready。
 - `E_IMG_DISK_NOT_FOUND`: IMG 日志盘未被识别到。

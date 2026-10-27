@@ -7,8 +7,8 @@ Results are aggregated into a consolidated batch report.
 
 Usage:
   python3 run_lthr_batch.py --issues MOD-7923 MOD-7924 --disk-root /mnt/f
-  python3 run_lthr_batch.py --issues-file batch.txt --runs 10 --continue-on-error
-  python3 run_lthr_batch.py --issues MOD-7923 MOD-7924 --csv-path /tmp/sample.csv --runs 5
+  python3 run_lthr_batch.py --issues-file batch.txt --rounds 10 --continue-on-error
+  python3 run_lthr_batch.py --issues MOD-7923 MOD-7924 --csv-path /tmp/sample.csv --rounds 5
 """
 
 import argparse

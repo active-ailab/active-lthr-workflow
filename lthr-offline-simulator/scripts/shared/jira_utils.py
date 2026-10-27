@@ -18,6 +18,10 @@ DownloadAttachmentFn = Callable[[Sequence[str], str, str, Path, float], Path]
 LogFn = Callable[[str], None]
 
 
+class MultiAttachmentModeRequiredError(RuntimeError):
+    """Raised when a Jira issue has multiple GoMore CSVs without an explicit run mode."""
+
+
 def find_zepp_cmd() -> List[str]:
     for name in ("zepp", "zepp.cmd", "zepp.exe"):
         if shutil.which(name):
@@ -122,6 +126,7 @@ def resolve_issue_sample_inputs(
     csv_path: str = "",
     csv_name: str = "",
     all_csvs: bool = False,
+    multi_attachment_mode: str = "",
     log_fn: Optional[LogFn] = None,
     find_zepp_cmd_fn: FindZeppCmdFn = find_zepp_cmd,
     get_issue_meta_fn: GetIssueMetaFn = get_issue_meta,
@@ -149,10 +154,17 @@ def resolve_issue_sample_inputs(
     attachments = list_jira_attachments_fn(zepp_cmd, issue_key)
     if log_fn:
         log_fn(f"[INFO] Found {len(attachments)} attachments")
+    csv_attachments = [attachment for attachment in attachments if CSV_NAME_RE.match(attachment["filename"])]
+    if not csv_name and len(csv_attachments) > 1 and not multi_attachment_mode:
+        raise MultiAttachmentModeRequiredError(
+            "Jira issue has multiple gomore_data_*.csv attachments. Choose "
+            "--multi-attachment-mode sequential or "
+            "--multi-attachment-mode single_person_multi_sample; use --csv-name to select one attachment."
+        )
     sample_attachments = choose_sample_attachments(
         attachments,
         csv_name=csv_name,
-        all_csvs=all_csvs,
+        all_csvs=all_csvs or bool(multi_attachment_mode),
     )
     sample_csvs = [
         download_issue_attachment_fn(

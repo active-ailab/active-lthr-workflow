@@ -64,6 +64,7 @@ class JiraUtilsTests(unittest.TestCase):
                 issue_key="MOD-2",
                 download_dir=tmp_path / "download",
                 all_csvs=True,
+                multi_attachment_mode="sequential",
                 log_fn=logs.append,
                 find_zepp_cmd_fn=_find,
                 get_issue_meta_fn=_meta,

@@ -7,6 +7,8 @@ from typing import Dict, List, Tuple
 def summarize_stability(results: List[Dict[str, object]]) -> str:
     ok_results = [r for r in results if r.get("status") == "ok" and "ltSpeed" in r]
     if not ok_results:
+        if results and all(r.get("status") == "ok" for r in results):
+            return "仿真执行成功，但未获得有效乳酸阈结果"
         return "无有效仿真结果"
     total_runs = len(results)
     signatures = Counter(

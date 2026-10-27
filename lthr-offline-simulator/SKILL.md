@@ -1,198 +1,138 @@
 ---
 name: lthr-offline-simulator
-description: 在真机上对GoMore离线CSV进行仿真并取日志，也适用于乳酸阈引导测试目标心率区间/百分比计算。设备操作由 watchlink-v3 提供。触发词: gomore offline csv test, WL+DISK=FS, data_sample, 单样本仿真, 批量仿真, 多样本, utest, Jira回传, 乳酸阈引导测试, 引导测试百分比, 目标心率区间, maxHr, restHr。
+description: "通过仓库内固定 Python 入口对 GoMore 离线 CSV 执行配置驱动仿真，并提取 C 端结果和历史归档；也用于乳酸阈引导测试目标心率区间/百分比计算。设备操作由 watchlink-v3 提供。触发词: gomore offline csv test, data_sample, 单样本仿真, 多样本, 多轮仿真, utest, Jira回传, 乳酸阈引导测试, maxHr, restHr。"
+Owner: cs-dongqi@zepp.com
+Organization: Active.Bu
 ---
 
 # LTHR Offline Simulator
 
-在真机上对 GoMore 离线 CSV 做单样本、批量和多样本仿真，并生成可回传 Jira 的结果文件。通用的 WSL bridge、端口探测、UART/MGR 路由和 watchlink 入口能力由 watchlink-v3 skill 提供；本 skill 只保留 LTHR 工作流入口、输出物和专项参数。
+本 skill 只负责选择和调用固定脚本入口、准备调用参数并说明输出位置。仿真配置、设备部署、UTest 调用、结果校验和产物提取均由 `scripts/` 中的 Python 流程实现；不要在 skill 步骤里直接拼接 UART UTest 命令或手工重复仿真。
 
 ## 使用边界
 
-- 适用场景：GoMore offline CSV 真机仿真、Jira CSV 附件回放、`data_sample` 多样本批跑、IMG 日志提取。
-- 适用场景：根据 `maxHr` / `restHr` 计算乳酸阈引导测试各阶段目标心率区间。
-- 不适用场景：纯 watchlink 串口发命令、刷机、monkey、端口选择问题；这类直接走 watchlink-v3 skill。
-- 如需设备操作帮助，请优先查看 `agent_skills/skills/device/watchlink-v3/SKILL.md` 的触发词列表。
-- WSL 主流程默认省略 `--disk-root`，让脚本走 Windows data-root 稳定路径。
-- 多设备或端口歧义时显式传 `--mgr-port` 和 `--uart-port`。
-- 共享 helper 已内建 bridge 异常、COM 口占用、post-unmount reset、shell-ready 提示；skill 文档不再重复长篇排障清单。
-- 引导测试心率区间的阶段百分比、公式和示例见 `references/guide_test_hr_ranges.md`。
+- GoMore 离线 CSV 仿真、Jira CSV 回放、`data_sample` 多样本仿真及可选 IMG 日志提取使用本 skill。
+- 乳酸阈引导测试的心率区间公式见 `references/guide_test_hr_ranges.md`。
+- 通用串口、WSL bridge、端口配对、刷机和设备排障使用 `watchlink-v3`。
+- 多样本仿真必须使用本地 `data_sample` 目录，并显式给出 `--mode` 与 `--rounds`。不要根据目录名推断样本是否属于同一人。
 
-| 工作流 | 脚本 | 数据源 | 产出 |
-|--------|------|--------|------|
-| **单样本** | `run_lthr_offline_sim.py` | Jira CSV / 本地文件 | log+json+md → Jira |
-| **批量** | `run_lthr_batch.py` | 多个 Jira | 逐 issue 独立回传 + 聚合报告 |
-| **多样本** | `run_device_multi_sim.py` | PC `data_sample/` | log → pipeline 出报告 |
-| **多样本(mount-log)** | `run_device_multi_sim.py --with-mount-log` | PC `data_sample/` | 完整日志 → pipeline 出完整报告 |
-| **快速 utest** | `run_utest_only.py` | 设备上已有数据 | 仅 UART utest 日志 |
+## 固定脚本入口
 
-**依赖**: watchlink-v3 runtime 入口（`wlctl.sh` / `wlctl.ps1` + co-located Python SDK）+ `zepp jira` + Python 3.8  
-**通道路由**: 基于 watchlink-v3 runtime 的 `--role UART/MGR` 机制切换；当前仿真 skill 已不再依赖 `v3dl com` 选口流程  
-**跨平台**: WSL 通过 Windows data-root + WLINK 端口对工作；Win `D:`–`Z:` / `.ps1` 自动包装
+脚本目录为本 skill 下的 `scripts/`。默认输出目录会由脚本打印；Jira/本地 CSV 入口用现有 `--work-dir` 指定工作根目录，本地多样本入口用现有 `--output-dir` 指定产物目录。
+从 `lthr-offline-simulator/` 目录运行以下示例；也可以将 `scripts/` 替换为脚本目录的绝对路径。
 
----
+### Jira 附件仿真
 
-## 一、单样本 (`run_lthr_offline_sim.py`)
-
-流程: 下载CSV → 下发设备并清理旧状态 → 拷CSV → 重启 → `utest` × `--runs` 次 → 提取结果 → Jira回传。多轮默认沿用设备历史状态；传 `--clean-between-runs` 可在每轮间清理历史并重启设备。
+指定 Jira 附件：
 
 ```bash
-python3 scripts/run_lthr_offline_sim.py <ISSUE_KEY> --mgr-port COM37 --uart-port COM36   # WSL 推荐: 在线下载→仿真→回传
-python3 scripts/run_lthr_offline_sim.py <ISSUE_KEY> --csv-path /tmp/s.csv --mgr-port COM37 --uart-port COM36
-python3 scripts/run_lthr_offline_sim.py <ISSUE_KEY> --csv-path /tmp/s.csv --runs 5 --clean-between-runs --mgr-port COM37 --uart-port COM36
-python3 scripts/run_lthr_offline_sim.py <ISSUE_KEY> --all-csvs --mgr-port COM37 --uart-port COM36
-python3 scripts/run_lthr_offline_sim.py <ISSUE_KEY> --csv-path /tmp/s.csv --skip-jira --deploy-only --mgr-port COM37
-# 只做挂盘/清理/复制/校验/卸盘健康检查，不进入 UART utest
+python3 scripts/run_lthr_offline_sim.py ITS-51497 --csv-name gomore_data_20261027_120000.csv --rounds 3
 ```
 
-### 关键参数
+指定本地 CSV、跳过 Jira：
 
-| 参数 | 默认 | 说明 |
-|------|------|------|
-| `ISSUE_KEY`（位置参数） | 必填 | Jira issue key，如 `ITS-51497` |
-| `--runs` | 1 | 仿真次数；多轮用于趋势分析 |
-| `--clean-between-runs` | 关闭 | 多轮时在每轮之间清理历史文件并重启设备，提升各轮独立性 |
-| `--csv-path` | — | 本地 CSV 文件（隐含 `--skip-jira`） |
-| `--csv-name` | — | 指定 CSV 附件名或 ID |
-| `--all-csvs` | — | 跑所有 `gomore_data_*.csv` 附件 |
-| `--disk-root` | 自动检测 | 仅非 WSL 或已手工挂载场景使用；当前 WSL 稳定路径建议留空 |
-| `--mgr-port` / `--uart-port` | 自动检测 | 基于 Windows started WLINK 端口对自动识别；多设备时显式指定串口 |
-| `--deploy-only` | — | 只做部署健康检查，跳过 UART utest |
-| `--skip-jira` | — | 跳过 Jira 通信，仅存本地 |
-| `--no-comment` | — | 不上传 Jira 评论（仍上传附件） |
-| `--boot-timeout-sec` | 180 | 设备启动等待超时 |
-| `--run-timeout-sec` | 2400 | 单次仿真超时 |
-| `--deploy-attempts` | 3 | 下发设备阶段（挂盘/清理/复制/卸载）失败时的自动重试次数 |
-| `--model-name` | 自动检测 | AI 模型名称（用于报告签名，默认从环境变量/config 读取） |
-| `--reasoning-effort` | 自动检测 | 推理强度等级（用于报告签名，默认从环境变量/config 读取） |
+```bash
+python3 scripts/run_lthr_offline_sim.py ITS-51497 --csv-path /path/to/gomore_data_20261027_120000.csv --skip-jira --rounds 3
+```
 
-### 运行约束
+- 单附件输入（`--csv-name` 或 `--csv-path`）使用 `single_sample`；`--rounds` 默认为 1，必须大于 0。
+- Jira issue 有多个匹配 CSV 且未用 `--csv-name` 指定单个附件时，必须显式提供 `--multi-attachment-mode`：
+  - `sequential`：每个附件独立生成 `single_sample` 配置并调用一次 UTest；
+  - `single_person_multi_sample`：声明这些附件属于同一人，将它们写入一份配置，只调用一次 UTest。
+- `--all-csvs` 选择全部匹配附件，多附件时仍须指定上述模式。若只需一个附件，使用 `--csv-name`，无需指定多附件模式。`--rounds N` 表示每份配置中的每个样本运行 N 轮。
+- JIRA_CASE 输入路径保持扁平：单个 CSV 为 `data_sample/JIRA_CASE/<文件名>`；同一人多样本时为 `data_sample/JIRA_CASE/sample_<序号>_<文件名>`，避免附件同名冲突。Issue 信息保存在摘要中，不再重复嵌入目录层级。
+- 仿真结果和日志直接保存在 `<work-dir>/<issue>/offline_sim_<时间戳>/`；未使用 `--skip-jira` 时，脚本按现有流程上传结果并可发表评论。
 
-- 前一轮残留 `gomore_his.data` / `lactateData.data` 会污染下一轮结果；完整脚本会在下发阶段主动清理并校验。
-- `utest` 按文件 mtime 取最新 CSV；脚本会把非标准命名自动标准化成 `gomore_data_YYYYMMDD_HHMMSS.csv`，并校验设备根层只剩一个 CSV。
-- WSL 下如果直接看到 bridge timeout、UNC、COM 口 denied、ready timeout，先看脚本打印出的 `[HINT]`，不要再回到 skill 文档里手工拼排障步骤。
+逐附件串行：
 
----
+```bash
+python3 scripts/run_lthr_offline_sim.py ITS-51497 --all-csvs --multi-attachment-mode sequential --rounds 3
+```
 
-### 输出产物
+同一人多样本：
 
-`<temp>/topic_ota/<ISSUE_KEY>/offline_sim_<stamp>/`:
+```bash
+python3 scripts/run_lthr_offline_sim.py ITS-51497 --all-csvs --multi-attachment-mode single_person_multi_sample --rounds 3
+```
 
-| 文件 | 说明 |
-|------|------|
-| `report_<stamp>.md` | 可读报告 + 趋势分析(均值/标准差/CV/斜率) |
-| `results_<stamp>.json` | 机器可读仿真结果 |
+### 本地多样本仿真
 
-模板与维护入口：
+```bash
+python3 scripts/run_device_multi_sim.py \
+  --data-dir /path/to/data_sample \
+  --mode single_person_multi_sample \
+  --rounds 3
+```
+
+可选模式：
+
+| `--mode` | 样本关系 | 执行含义 |
+|---|---|---|
+| `single_sample` | 单人、单样本 | 同一样本按轮次运行，轮次间时间戳推进一天 |
+| `single_person_multi_sample` | 单人、多样本 | 轮次优先、每轮遍历所有样本；每个“轮次×样本”推进一天 |
+| `multi_person_multi_sample` | 多人、多样本 | 样本优先、每个样本跑完所有轮次；样本切换不推进时间戳，只有轮次推进一天 |
+
+`single_person_multi_sample` 和 `multi_person_multi_sample` 至少需要两个样本。输入样本按相对路径排序后写入配置；仅文件名匹配 `gomore_data_*.csv` 的文件进入样本清单。`base_case_updates_*` 作为元数据保留，不作为样本。
+C 端在 UTest 开始时读取设备时间建立本次时间基准；具体时间戳生成由固定 C 实现负责，skill 不要求调用者手工改写样本时间戳。
+
+### 部署式 UTest 入口
+
+`run_utest_only.py` 是 `run_device_multi_sim.py` 的命令别名，共用同一套配置、部署、单次 UTest、结果提取和状态码逻辑。参数相同：
+
+```bash
+python3 scripts/run_utest_only.py \
+  --data-dir /path/to/data_sample \
+  --mode multi_person_multi_sample \
+  --rounds 2
+```
+
+该入口同样要求本地 `--data-dir`、显式 `--mode` 和正整数 `--rounds`。`--img-only` 是单独的 IMG 提取模式，不启动仿真。
+
+### Jira 批量入口
+
+```bash
+python3 scripts/run_lthr_batch.py --issues ITS-51497 ITS-51498 --rounds 3 --continue-on-error
+```
+
+批量脚本串行调用 `run_lthr_offline_sim.py`；每个 issue 都是独立外层仿真。轮次参数为 `--rounds`，旧 `--runs` 和 `--clean-between-runs` 不再使用。
+
+## 固定仿真流程
+
+对每次外层调用，固定脚本完成以下操作：
+
+1. 收集本次有效 `gomore_data_*.csv`，在系统临时目录创建隔离的 `data_sample` staging；仿真结束后清理，不留在产物目录。
+2. 生成唯一 `run_id` 和 `sim_config.ini`。`sample_count` 及样本顺序以写入配置为准。
+3. 将 staging 内容部署到设备 `/storage/sport/gomore/data_sample/`；部署时不预清理，以免仿真失败前丢失现场。
+4. 设备就绪后只发送一次 `utest gomore_offline_csv_sim_tests`，等待 C 端完成配置中全部样本和轮次。
+5. 看到 UTest 结束标记后，提取 `sim_result.ini` 和本次 `run_id` 对应的 `gomore_his_<run_id>*.data`，校验结果并直接保存到本地输出目录。逐附件串行产生多次 UTest 时，仅将各次固定名结果文件放在 `runs/<run_id>/`，避免互相覆盖。
+6. 仅当结果校验通过且 C 端 `overall_status=success` 时，脚本在产物提取后清空设备 `data_sample` 的全部内容，并验证目录为空。仿真部分完成、失败、未观察到 UTest 结束标记或提取校验失败时，保留输入 CSV 和配置供排查。
+
+Python 不在样本或轮次之间重复启动 UTest，也不删除 `gomore_his.data` 或 `gomore_his.data.bak`。历史状态备份、仿真历史恢复和本次归档由 C UTest 管理。
+
+## 结果判断
+
+- `sim_result.ini` 的 `version`、`run_id`、`mode`、`rounds` 和 `sample_count` 必须匹配本次配置。
+- 最终状态以 C 端 `overall_status` 和每样本状态为准：`success`、`partial`、`failed`。`partial`/`failed` 会保留已提取产物、输出明确错误并以非零状态退出。
+- 单个多人样本异常时，C 端结果文件记录异常样本及停止轮次；脚本保留该样本状态和历史归档，并继续报告其他样本结果。
+- 乳酸阈数值无效或未输出，不代表仿真执行失败。阈值字段只从最终算法 UART/IMG 日志解析；状态仍按结果文件判断。
+- 脚本会在原始日志中补充报告解析器所需的样本头和轮次标记，`lthr-multi-sample-report` 用于仿真后的报告处理，不负责启动仿真。
+
+## 日志与产物
+
+脚本记录完整 UART 原始日志、JSON 摘要、Markdown 报告（适用时）、`sim_result.ini` 副本和历史归档副本，均直接放在本次产物目录中；临时输入副本不保留。显式传入 `run_device_multi_sim.py --output-dir` 时，该路径就是最终产物目录；省略时保留默认的 `run_id` 隔离子目录。运行命令会打印最终产物绝对路径。多样本流程可用 `--with-img-extract` 附加提取 IMG 日志；它不改变仿真入口或 UTest 次数。
+
+## 维护
+
+- 修改固定入口或参数时，同步维护本节命令示例。
+- C 配置、状态或归档契约变化时，核对 `framework/engine/sportEngine/alg_gomore/test/alg_gomore_offline_csv_test.c` 后再维护脚本与本 skill。
+- 仿真调用只从本节列出的 Python 入口发起；通用设备操作交给 `watchlink-v3`。
+
+## 参考资料
 
 - 报告模板：`assets/report_template.md`
 - Jira 评论模板：`assets/jira_comment_template.md`
 - 批量汇总模板：`assets/batch_report_template.md`
-- UART-only 摘要模板：`assets/utest_summary_template.md`
 - IMG 提取模板：`assets/img_report_template.md`
-- 占位符与维护规则：`references/output_templates.md`
-- 运行时错误码：`references/runtime_error_codes.md`
-- 统一摘要结构：`references/summary_schema.md`
-
-报告签名格式为 `（by {model} | reasoning={effort}）`，自动从环境变量或 `~/.codex/config.toml` 读取。Jira 评论固定包含仿真样本与结果摘要，不包含模型签名、Issue 行或标题行。
-
----
-
-## 二、批量 (`run_lthr_batch.py`)
-
-逐个 issue 串行调用 `run_lthr_offline_sim.py`，每个独立走完下载→仿真→回传，产出聚合报告。
-
-```bash
-python3 scripts/run_lthr_batch.py --issues MOD-7923 MOD-7924 --mgr-port COM37 --uart-port COM36
-python3 scripts/run_lthr_batch.py --issues-file batch.txt --runs 10 --continue-on-error
-python3 scripts/run_lthr_batch.py --issues MOD-7923 MOD-7924 --csv-path /tmp/sample.csv
-```
-
-| 参数 | 说明 |
-|------|------|
-| `--issues` / `--issues-file` | Issue key 列表 或 文件(每行一个，`#`注释) |
-| `--continue-on-error` | 跳过失败继续 |
-| 其余 | 透传 `run_lthr_offline_sim.py` 参数 |
-
-产出：`batch_dir/<issue>/artifacts/` + `batch_<stamp>_consolidated.md` 汇总结果。
-
----
-
-## 三、多样本 (`run_device_multi_sim.py`)
-
-流程：挂 data 盘拷 `data_sample` → 等启动 → 监听 `multi_tests` → 可选提取 IMG 日志。
-
-**data_sample 来源**：优先从飞书云盘 `HYS7fstGll8lGedAVKFc6RNxnAb` 拉取；若失败则需显式指定 `--data-dir`（不再默认使用 Lyon 本地路径）。
-
-```bash
-python3 scripts/run_device_multi_sim.py --mgr-port COM37 --uart-port COM36                                       # 基础（从云盘拉取 data_sample）
-python3 scripts/run_device_multi_sim.py --data-dir /path/to/data_sample --with-img-extract                        # 指定本地目录+提取完整日志
-python3 scripts/run_device_multi_sim.py --with-img-extract --pre-run-delay-sec 60                                 # 等待60秒再发命令
-python3 scripts/run_device_multi_sim.py --img-only                                                                # 仅提取已有日志
-
-# 多样本完成后，直接把 summary 交给报告 skill
-python3 ~/.agents/skills/lthr-multi-sample-report/scripts/run_pipeline.py \
-	--offline-summary /tmp/lthr_multi_sim/device_multi_sim_20260512_101530.json \
-	--steps 1,4-6
-
-# 如果这次 multi log 同时包含 BASE_CASE 和 JIRA_CASE，不传 --steps 让报告 pipeline 自动分流
-python3 ~/.agents/skills/lthr-multi-sample-report/scripts/run_pipeline.py \
-	--offline-summary /tmp/lthr_multi_sim/device_multi_sim_20260512_101530.json
-```
-
-### 关键参数
-
-| 参数 | 默认 | 说明 |
-|------|------|------|
-| `--data-dir` | 飞书云盘 `HYS7...xnAb`（自动拉取） | PC 端 data_sample 目录。不传时尝试从飞书云盘拉取，失败时报错要求指定 |
-| `--mgr-port` / `--uart-port` | 自动检测 | 基于 Windows started WLINK 端口对自动识别；多设备时显式指定串口 |
-| `--run-timeout-sec` | 72000 | 仿真超时(20h) |
-| `--pre-run-delay-sec` | 30 | 设备就绪后等 N 秒再发测试命令，避免日志溢出 |
-| `--with-img-extract` / `--img-only` | — | **推荐** IMG 日志提取（获取完整日志替代 UART），报告 pipeline 自动优先使用 |
-| `--keep-device-logs` | — | 提取后保留设备日志 |
-
-说明：`img_log_extractor.py` 在未显式传 `--output-dir` 时，默认输出到系统临时工作目录，而不是 `skills/lthr-offline-simulator` 目录。
-
-对接报告 skill 时，优先把 `run_device_multi_sim.py` 的 `device_multi_sim_<stamp>.json` 作为输入，而不是手工再找 raw log。报告 pipeline 会从该 summary 的 `artifacts.log_path` 自动恢复解析输入，并默认把生成的 `samples_*.json` 和 Markdown 报告放到同一目录。
-
-如果同一份 multi log 里同时有 `BASE_CASE` 和 `JIRA_CASE`，报告 pipeline 在未显式传 `--steps` 时会自动探测并切到 `1-14`，同时从 raw log 或 `jira_samples_<sdk>.json` 自动恢复 `--jira-issues`，不需要再手工抄 issue 列表。
-
-多样本状态判定以脚本输出的 summary JSON 为准，不再要求 raw UART log 一定出现 `GoMore Offline CSV Test Start`。在 Lyon 真机上，multi run 可能缺失 start marker，但只要已经出现样本进度、样本 PASS/FAIL、summary 或 `GoMore Offline CSV Test End`，`run_device_multi_sim.py` 就会按“测试已启动/已完成”处理，而不是误报 `test_not_started`。
-
-### `data_sample` 结构
-
-```
-data_sample/
-├── BASE_CASE/01lyh~13.../
-├── JIRA_CASE/{COLOGNE-3107,WIN-1957}/
-├── ROOT_CASE/gomore_data_*.csv
-└── base_case_updates_*.csv / *.json
-```
-
----
-
-## 四、快速模式 (`run_utest_only.py`)
-
-数据已在设备上时，跳过磁盘操作直跑 utest。**无需 sudo**。
-
-```bash
-python3 scripts/run_utest_only.py --uart-port COM36   # 前提: data_sample/已有CSV，状态已清理
-```
-
-**适用场景**: 重跑 / sudo不可用 / 多Jira第二轮 / 快速调试  
-**原理**: `send_uart_cmd()` → `listen_uart()` 循环匹配 START/END marker → 正则提取结果
-
-| 参数 | 默认 | 说明 |
-|------|------|------|
-| `--uart-port` | `COM36` | UART 串口 |
-| `--run-timeout-sec` | 300 | 等待超时 |
-
-**与完整脚本对比**: 磁盘操作❌ / 状态清理❌ / 重启❌ / 趋势分析❌ / Jira回传❌ / sudo依赖**无** ✅。耗时约 5 分钟，对比完整流程约 30 分钟。
-
----
-
-## 维护规则
-
-- 通用串口、bridge、端口配对和 watchlink 快检规则，统一保留在 watchlink-v3 skill，不在本 skill 复制。
-- 输出文档骨架放 `assets/`，模板占位符和修改约束放 `references/`，不要再把完整模板内联回 `SKILL.md`。
-- 运行时下一步动作优先写进共享 Python helper 或 argparse help，而不是继续扩写 markdown 排障章节。
+- 引导测试心率范围：`references/guide_test_hr_ranges.md`
+- 输出字段：`references/summary_schema.md`
+- 运行时诊断码：`references/runtime_error_codes.md`

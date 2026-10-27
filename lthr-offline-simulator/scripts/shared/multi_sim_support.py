@@ -7,6 +7,7 @@ from typing import Callable, Dict, List, Optional
 
 from _summary_schema import init_summary, update_artifacts, update_metrics
 
+from .offline_sim_contract import collect_sample_paths
 from .workflow_reporter import inject_runtime_hint
 
 
@@ -118,11 +119,9 @@ def run_img_extract_phase(
 
 def resolve_data_sample_dir(data_dir: str, script_path: Path) -> Path:
     """解析 data_sample 目录。必须显式指定 data_dir。"""
+    del script_path
     if not data_dir:
-        raise RuntimeError(
-            "未指定 --data-dir，且无法从飞书云盘下载 data_sample。\n"
-            "请通过 --data-dir 指定本地 data_sample 目录。"
-        )
+        raise RuntimeError("仿真流程必须显式传入本地 --data-dir data_sample 目录")
     path = Path(data_dir).expanduser().resolve()
     if not path.is_dir():
         raise RuntimeError(f"data_sample 目录不存在: {path}")
@@ -130,7 +129,7 @@ def resolve_data_sample_dir(data_dir: str, script_path: Path) -> Path:
 
 
 def collect_data_sample_csvs(local_data_sample: Path) -> List[Path]:
-    return sorted(local_data_sample.rglob("*.csv"))
+    return collect_sample_paths(local_data_sample)
 
 
 def print_data_sample_inventory(
