@@ -46,6 +46,7 @@ def build_comment(
     sample_summaries: List[Dict[str, object]],
     artifact_names: Sequence[str],
     _signature: str,
+    device_sdk_version: str = "未获取",
 ) -> str:
     lines: List[str] = []
     for sample in sample_summaries:
@@ -84,6 +85,7 @@ def build_comment(
         "jira_comment_template.md",
         {
             "sample_count": len(sample_summaries),
+            "device_sdk_version": device_sdk_version or "未获取",
             "sample_lines": ("\n".join(lines) + "\n") if lines else "",
             "attachment_line": f"* 附件: {', '.join(artifact_names)}\n" if artifact_names else "",
         },

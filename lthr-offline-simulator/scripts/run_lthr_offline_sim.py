@@ -23,6 +23,7 @@ from shared.jira_utils import (
     resolve_issue_sample_inputs,
 )
 from shared.jira_reporting import (
+    extract_device_sdk_version,
     publish_issue_artifacts,
     resolve_model_signature,
 )
@@ -307,11 +308,12 @@ def main() -> int:
         deploy_only_samples=deploy_only_samples,
         has_trend_analysis=has_trend_analysis,
     )
+    raw_log = "".join(raw_sections)
     artifact_result = write_artifacts(
         log_path=log_path,
         json_path=json_path,
         report_path=report_path,
-        raw_log="".join(raw_sections),
+        raw_log=raw_log,
         summary=json_payload,
         report_extra={
             "issue_meta": issue_meta,
@@ -331,6 +333,7 @@ def main() -> int:
             sample_summaries=sample_summaries,
             artifact_paths=[report_path, json_path, log_path],
             signature=signature,
+            device_sdk_version=extract_device_sdk_version(raw_log),
             no_comment=args.no_comment,
         )
 

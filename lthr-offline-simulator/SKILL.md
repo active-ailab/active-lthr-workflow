@@ -41,7 +41,7 @@ python3 scripts/run_lthr_offline_sim.py ITS-51497 --csv-path /path/to/gomore_dat
   - `single_person_multi_sample`：声明这些附件属于同一人，将它们写入一份配置，只调用一次 UTest。
 - `--all-csvs` 选择全部匹配附件，多附件时仍须指定上述模式。若只需一个附件，使用 `--csv-name`，无需指定多附件模式。`--rounds N` 表示每份配置中的每个样本运行 N 轮。
 - JIRA_CASE 输入路径保持扁平：单个 CSV 为 `data_sample/JIRA_CASE/<文件名>`；同一人多样本时为 `data_sample/JIRA_CASE/sample_<序号>_<文件名>`，避免附件同名冲突。Issue 信息保存在摘要中，不再重复嵌入目录层级。
-- 仿真结果和日志直接保存在 `<work-dir>/<issue>/offline_sim_<时间戳>/`；未使用 `--skip-jira` 时，脚本按现有流程上传结果并可发表评论。
+- 仿真结果和日志直接保存在 `<work-dir>/<issue>/offline_sim_<时间戳>/`；未使用 `--skip-jira` 时，脚本将报告、JSON 摘要和原始日志打成一个 ZIP，并且只向 Jira 上传这一个 ZIP 附件，绝不逐个上传文件；随后可发表评论。
 
 逐附件串行：
 

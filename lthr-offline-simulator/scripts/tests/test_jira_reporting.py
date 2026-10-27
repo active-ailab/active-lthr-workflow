@@ -45,10 +45,11 @@ class JiraReportingTests(unittest.TestCase):
         def _upload(zepp_cmd, issue_key, artifact_paths):
             uploads.append((list(zepp_cmd), issue_key, [path.name for path in artifact_paths]))
 
-        def _build(issue_meta, sample_summaries, artifact_names, signature):
+        def _build(issue_meta, sample_summaries, artifact_names, signature, device_sdk_version):
             self.assertEqual(issue_meta["key"], "MOD-1")
             self.assertEqual(len(sample_summaries), 1)
             self.assertEqual(signature, "sig")
+            self.assertEqual(device_sdk_version, "未获取")
             return f"comment:{','.join(artifact_names)}"
 
         def _comment(zepp_cmd, issue_key, comment):
@@ -57,6 +58,8 @@ class JiraReportingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             artifacts = [tmp_path / "report.md", tmp_path / "result.json", tmp_path / "raw.log"]
+            for path in artifacts:
+                path.write_text(path.name, encoding="utf-8")
             comment = publish_issue_artifacts(
                 zepp_cmd=["zepp"],
                 issue_key="MOD-1",
@@ -69,9 +72,10 @@ class JiraReportingTests(unittest.TestCase):
                 add_jira_comment_fn=_comment,
             )
 
-        self.assertEqual(comment, "comment:report.md,result.json,raw.log")
-        self.assertEqual(uploads, [(["zepp"], "MOD-1", ["report.md", "result.json", "raw.log"])])
-        self.assertEqual(comments, [(["zepp"], "MOD-1", "comment:report.md,result.json,raw.log")])
+        archive_name = "report_artifacts.zip"
+        self.assertEqual(comment, f"comment:{archive_name}")
+        self.assertEqual(uploads, [(["zepp"], "MOD-1", [archive_name])])
+        self.assertEqual(comments, [(["zepp"], "MOD-1", f"comment:{archive_name}")])
 
     def test_publish_issue_artifacts_skips_comment_when_disabled(self) -> None:
         uploads = []
@@ -86,6 +90,7 @@ class JiraReportingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             artifacts = [tmp_path / "report.md"]
+            artifacts[0].write_text("report", encoding="utf-8")
             comment = publish_issue_artifacts(
                 zepp_cmd=["zepp"],
                 issue_key="MOD-2",

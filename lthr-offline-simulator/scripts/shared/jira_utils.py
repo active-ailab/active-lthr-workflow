@@ -116,7 +116,12 @@ def upload_attachments(
     file_paths: Sequence[Path],
     timeout: float = 120,
 ) -> None:
-    run_cmd(list(zepp_cmd) + ["jira", "attachment", "add", issue_key] + [str(p) for p in file_paths], timeout=timeout)
+    paths = [Path(path) for path in file_paths]
+    if len(paths) != 1 or paths[0].suffix.lower() != ".zip":
+        raise ValueError("Jira simulation upload requires exactly one ZIP archive")
+    if not paths[0].is_file():
+        raise FileNotFoundError(f"Jira upload archive not found: {paths[0]}")
+    run_cmd(list(zepp_cmd) + ["jira", "attachment", "add", issue_key, str(paths[0])], timeout=timeout)
 
 
 def resolve_issue_sample_inputs(
