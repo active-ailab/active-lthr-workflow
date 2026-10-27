@@ -78,7 +78,12 @@ def _format_invalid_round_status(lt_speed: float, lh: float, mh: float) -> str:
     return f"invalid_result: ltSpeed={lt_speed:.3f}, lh={int(lh)}, mh={int(mh)}"
 
 
-def parse_log(filepath: str, case_filter: str = "BASE_CASE", with_group: bool = False) -> dict:
+def parse_log(
+    filepath: str,
+    case_filter: str = "BASE_CASE",
+    with_group: bool = False,
+    jira_issue_key: Optional[str] = None,
+) -> dict:
     """
     主解析函数：从日志中提取样本数据。
     返回 { sample_name: { fields } } 结构。
@@ -99,10 +104,15 @@ def parse_log(filepath: str, case_filter: str = "BASE_CASE", with_group: bool = 
             current_case = case_name.upper()
 
             # 样本名: BASE_CASE 保留目录名本身 (01lyh..13nwr)，保证和模板 Base 对齐
-            # JIRA_CASE 取 "SAMPLE_DIR/文件名不含扩展名" (一个 Issue 可能多个 CSV)
+            # 新 JIRA_CASE 摘要保留 Issue key；扁平暂存文件名的 sample_NNN_ 前缀需去掉。
+            # 未提供 Issue key 时保留旧日志中的 SAMPLE_DIR/文件名兼容行为。
             if current_case == "JIRA_CASE":
                 fname = os.path.splitext(filename)[0]
-                sample_key = f"{sample_dir}/{fname}"  # 如 COLOGNE-3107/gomore_data_20260320_110740
+                if jira_issue_key:
+                    fname = re.sub(r"^sample_\d+_(?=gomore_data_)", "", fname, flags=re.IGNORECASE)
+                    sample_key = f"{jira_issue_key.upper()}/{fname}"
+                else:
+                    sample_key = f"{sample_dir}/{fname}"
             else:
                 sample_key = sample_dir.lower()
             current_sample = sample_key
@@ -233,6 +243,8 @@ def main():
     parser.add_argument("--case", choices=["BASE_CASE", "JIRA_CASE", "ALL"],
                         default="BASE_CASE",
                         help="提取的 case 类型 (默认: BASE_CASE)")
+    parser.add_argument("--jira-issue-key",
+                        help="新式扁平 JIRA_CASE 日志对应的 Jira issue key")
     parser.add_argument("--with-group", action="store_true",
                         help="尝试解析样本分组")
     args = parser.parse_args()
@@ -241,7 +253,11 @@ def main():
         print(f"ERROR: 文件不存在: {args.logfile}", file=sys.stderr)
         sys.exit(1)
 
-    samples = parse_log(args.logfile, case_filter=args.case)
+    samples = parse_log(
+        args.logfile,
+        case_filter=args.case,
+        jira_issue_key=args.jira_issue_key,
+    )
 
     if not samples:
         print("WARN: 未解析到任何样本数据", file=sys.stderr)

@@ -1,6 +1,6 @@
 ---
 name: lthr-multi-sample-report
-version: 3.2.7
+version: 3.2.8
 description: "优先用于：多样本仿真报告、乳酸阈多样本仿真报告、LTHR 多样本仿真报告。用于乳酸阈(LTHR)多样本报告生成、三源对比、单版仿真、JIRA 对比、SDK 版本对比、Lark Base 读写、飞书发布和归档。触发词: 多样本仿真报告, 乳酸阈多样本仿真报告, LTHR多样本仿真报告, 重新输出多样本仿真报告, 输出多样本仿真报告, 多样本报告, 乳酸阈报告, 仿真报告, 对比报告, SDK版本对比, 三源对比, Garmin DUT SDK 对比, garmin对比, 多轮仿真一致性, BASE_CASE, JIRA_CASE, Lark Base, 飞书文档发布, 群通知, 归档发布。"
 metadata:
   requires:
@@ -28,10 +28,37 @@ Base token、table-id 等常用凭证已固化到 `scripts/_pipeline_config.py` 
 
 ## 快速启动
 
+### 新仿真与报告的衔接
+
+- 本 Skill 的整体流程可以先调用 `lthr-offline-simulator` 生成仿真结果，再调用本目录的 `run_pipeline.py` 做解析、对比和发布。`run_pipeline.py` 只消费仿真 summary/log，不会自行启动 UTest。
+- 每次由本 Skill 发起的新仿真，固定通过离线仿真入口传入 `--rounds 3`；仿真模式必须按样本关系显式选择，不能从 CSV 数量或目录名推断。时间戳推进沿用离线仿真代码规则：单样本按轮次推进；单人多样本按“轮次优先、样本其次”推进；多人多样本按“样本优先、轮次其次”遍历，切换样本不推进时间戳。同一模式的详细起始时间戳和步进规则以 `lthr-offline-simulator` Skill 为准。
+- Jira 附件仿真使用 `run_lthr_offline_sim.py`；多附件必须按离线仿真 Skill 的约定显式选 `sequential` 或 `single_person_multi_sample`。本地 `data_sample` 仿真使用 `run_device_multi_sim.py`，显式传 `--mode` 与 `--rounds 3`。
+- 仿真结束后，以入口输出的 `[OK] json=...` 或 `[完成] JSON 摘要: ...` 路径作为 `--offline-summary`，不要猜测或拼接 summary 文件名。summary 内的 `artifacts.log_path` 是日志解析输入；Jira issue key 从 Jira 仿真 summary 的 `issue.key` 获取。
+- 如果用户只要求重出已有仿真报告，直接使用指定的 summary 或日志，不重新运行仿真。
+- 旧的单轮仿真日志和 Jira 评论仍可用于历史报告。新发起的仿真固定三轮；报告模板最多呈现前三轮，仿真状态以 C 端 summary 为准。没有有效 LTHR 结果表示本轮没有可对比阈值，不单独据此判为仿真失败。
+
+仿真入口的模式按样本关系选择：
+
+| `--mode` | 样本关系 | 时间戳遍历 |
+|---|---|---|
+| `single_sample` | 一人一个样本 | 轮次递增时推进一天 |
+| `single_person_multi_sample` | 多个样本属于同一人 | 轮次优先，每轮遍历全部样本；每个样本轮次推进一天 |
+| `multi_person_multi_sample` | 多个样本各属于不同人 | 样本优先，每个样本完成所有轮次；切换样本不推进，轮次推进一天 |
+
+例如，多附件 Jira 单人多样本仿真由离线入口显式指定模式和三轮；之后将入口打印出的 JSON 路径传给报告 pipeline：
+
+```bash
+python3 /home/zepp/workspace/active-lab/active-lthr-workflow/lthr-offline-simulator/scripts/run_lthr_offline_sim.py \
+  ITS-51497 --all-csvs \
+  --multi-attachment-mode single_person_multi_sample --rounds 3
+
+python3 scripts/run_pipeline.py --offline-summary "<上一步输出的 JSON 路径>"
+```
+
 ```bash
 # 一键全流程（简化版，凭证已固化到 skill 中）
 python3 scripts/run_pipeline.py \
-  --offline-summary /tmp/lthr_multi_sim/device_multi_sim_<stamp>.json
+  --offline-summary "<仿真入口输出的 JSON 路径>"
 
 # 或者指定日志文件
 python3 scripts/run_pipeline.py \
@@ -46,15 +73,13 @@ python3 scripts/run_pipeline.py \
 
 # JIRA CASE 全流程（步骤11-14）
 python3 scripts/run_pipeline.py \
-  --log-file /path/to/lyon_xxx.log --sdk-ver 1.0.16.0 \
-  --jira-issues COLOGNE-3107 MAT-13034 MOD-7798 MOD-8699 WIN-1957 WIN-2552 \
+  --offline-summary "<Jira 仿真入口输出的 JSON 路径>" \
   --steps 11-14
 
 # JIRA CASE + BASE CASE 全流程
 python3 scripts/run_pipeline.py \
-  --log-file /path/to/lyon_xxx.log --sdk-ver 1.0.16.0 \
+  --offline-summary "<包含 BASE_CASE 和 JIRA_CASE 的仿真 summary 路径>" \
   --base-token X --table-id Y \
-  --jira-issues COLOGNE-3107 MAT-13034 MOD-7798 MOD-8699 WIN-1957 WIN-2552 \
   --steps 1-14
 
 # 干跑预览
@@ -65,25 +90,25 @@ python3 scripts/run_pipeline.py --sdk-ver 1.0.15.0 --json data.json --steps 4-6
 
 # 直接消费 lthr-offline-simulator 多样本输出
 python3 scripts/run_pipeline.py \
-  --offline-summary /tmp/lthr_multi_sim/device_multi_sim_20260512_101530.json \
+  --offline-summary "<仿真入口输出的 JSON 路径>" \
   --steps 1,4-6
 
 # 自动识别 summary 对应日志里的 BASE_CASE / JIRA_CASE，未显式传 --steps 时自动选择 1-10 / 11-14 / 1-14
 python3 scripts/run_pipeline.py \
-  --offline-summary /tmp/lthr_multi_sim/device_multi_sim_20260512_101530.json
+  --offline-summary "<仿真入口输出的 JSON 路径>"
 ```
 
-说明：传 `--offline-summary` 时，pipeline 会优先读取 summary 里的 `artifacts.log_path` 作为解析输入。报告和中间 JSON 默认写入系统临时目录下按 summary 文件名生成的稳定任务目录，例如 `/tmp/lthr-multi-sample-report/summary_device_multi_sim_<stamp>_<hash>/`；重复使用同一个输入时会复用该目录，便于分阶段生成和发布。可用 `--output-dir` 指定其他位置。
+说明：传 `--offline-summary` 时，pipeline 会优先读取 summary 里的 `artifacts.log_path` 作为解析输入，并从仿真日志自动提取 SDK 版本。若日志没有 SDK 版本行，才手动传 `--sdk-ver`。报告和中间 JSON 默认写入系统临时目录下按 summary 文件名生成的稳定任务目录，例如 `/tmp/lthr-multi-sample-report/summary_lthr_offline_sim_<issue>_<stamp>_<hash>/`；重复使用同一个输入时会复用该目录，便于分阶段生成和发布。可用 `--output-dir` 指定其他位置。
 
 说明：未传 `--output-dir` 时，`data_sample/` 仍作为自动查找已有样本 JSON/Base JSON 的备用输入目录，不再作为新报告和中间 JSON 的默认输出位置。
 
-说明：`--offline-summary` 模式下，如果没有显式传 `--steps`，pipeline 会先扫描 raw log 中的 `CASE=BASE_CASE` / `CASE=JIRA_CASE`：
+说明：`--offline-summary` 模式下支持 summary 的 `single_sample`、`multi_sample` 工作流。如果没有显式传 `--steps`，pipeline 会先扫描 raw log 中的 `CASE=BASE_CASE` / `CASE=JIRA_CASE`：
 
 - 只有 `BASE_CASE`：自动执行 `1-10`
 - 只有 `JIRA_CASE`：自动执行 `11-14`
 - 同时包含两者：自动执行 `1-14`
 
-说明：JIRA 路径在未显式传 `--jira-issues` 时，会优先从 `jira_samples_<sdk>.json` 推断；若还没有该文件，则回退到 raw log 的 `JIRA_CASE SAMPLE_DIR=` 记录自动恢复 issue 列表。
+说明：Jira 仿真 summary 的 `source.kind=jira_attachment` 且含 `issue.key` 时，pipeline 会自动恢复 issue key，并将扁平 `JIRA_CASE` 样本映射成 `ISSUE_KEY/原始CSV文件名`，去掉暂存时添加的 `sample_NNN_` 前缀。无 summary 时仍可从已有 Jira JSON 或旧日志推断；直接传新式扁平 Jira 日志时，请显式传唯一的 `--jira-issues ISSUE_KEY`。
 
 ## 实战约定（2026-05-18 已验证）
 
@@ -93,7 +118,7 @@ python3 scripts/run_pipeline.py \
 
 ```bash
 python3 scripts/run_pipeline.py \
-  --offline-summary /tmp/lthr_multi_sim/device_multi_sim_<stamp>.json \
+  --offline-summary "<仿真入口输出的 JSON 路径>" \
   --steps 1,4,5,11-13
 ```
 
@@ -103,7 +128,7 @@ python3 scripts/run_pipeline.py \
 
 ```bash
 python3 scripts/run_pipeline.py \
-  --offline-summary /tmp/lthr_multi_sim/device_multi_sim_<stamp>.json \
+  --offline-summary "<仿真入口输出的 JSON 路径>" \
   --steps 2,7,9,14
 ```
 
@@ -141,7 +166,8 @@ python3 scripts/run_pipeline.py \
 
 开始执行前，明确并记录：
 
-- 当前使用的 `device_multi_sim_<stamp>.json`
+- 当前使用的仿真 summary JSON（以仿真入口实际打印出的路径为准）
+- 本次 `run_id`、仿真 `mode`、配置 `rounds`、样本数及 C 端 summary `status`
 - 当前 SDK 版本 `sdk_ver`
 - 如需步骤 6，上一版 `prev_ver` 是什么
 - 当前发布目录 `folder token`
@@ -210,25 +236,29 @@ BASE CASE 用步骤 1-10，JIRA CASE 用步骤 11-14。
 | 8 | BASE | 复制并归档 Base | `--base-template X` |
 | 9 | BASE | 归档日志 | `--gomore-folder Y` |
 | 10 | BASE | 群通知 | `--chat-id oc_xxx` |
-| 11 | JIRA | 从日志解析 JIRA_CASE 样本 | `--jira-issues ISSUE1 ISSUE2 ...` |
+| 11 | JIRA | 从日志解析 JIRA_CASE 样本 | 优先使用 summary 的 `issue.key` 自动归属；无 summary 时可传 `--jira-issues ISSUE_KEY` |
 | 12 | JIRA | 从 JIRA 评论提取旧版 SDK 基准值 | 自动执行 `fetch_jira_baseline.py` |
 | 13 | JIRA | 生成新旧 SDK 对比报告 | 自动执行 `generate_jira_report.py` |
 | 14 | JIRA | 发布对比报告到飞书文档 | pipeline 自动执行 |
 
 ### 注意事项
 
-- **JIRA CASE 样本名**: 格式为 `ISSUE_KEY/filename`（如 `COLOGNE-3107/gomore_data_20260320_110740`），一个 Issue 可对应多个 CSV 文件。
-- **单轮次仿真**: 大多数 JIRA CASE 只有 1 轮仿真结果（日志中有且仅有 `Round 1` 输出），报告会自动调整对比格式。
+- **JIRA CASE 样本名**: 报告 JSON key 为 `ISSUE_KEY/原始CSV文件名不含扩展名`（如 `COLOGNE-3107/gomore_data_20260320_110740`）。Jira 离线仿真的暂存文件可能带 `sample_NNN_` 前缀；解析时会根据 summary 的 `issue.key` 还原 issue 和原始文件名，以匹配 Jira 评论基准。
+- **轮次口径**: 本 Skill 发起的新仿真固定传 `--rounds 3`，轮次数由仿真入口写入配置并由 C 端执行；报告使用仿真1-3字段，不从样本数、日志长度或基准评论动态决定仿真轮数。历史单轮日志及旧版单结果 Jira 评论仍兼容，报告按可用数据呈现。
+- **仿真状态与阈值结果**: `success` / `partial` / `failed` 来自 C 端 summary。`partial`、`failed` 会在 pipeline 输出警告并写入 Jira 对比报告状态；没有有效 LTHR 结果只表示没有可比较的阈值，不能单独作为仿真失败依据。各轮有效结果仍从最终设备日志提取。
+- **SDK 版本**: 默认从实际设备日志中的 `SDK Version` 行提取；不使用手工猜测的安装包版本。日志未包含版本信息时，才显式传 `--sdk-ver`。
+- **Jira 附件**: 离线仿真回传 Jira 时由仿真入口打包并上传单个 ZIP；本 Skill 通过 Jira 评论读取基准结果，不逐个下载或回传仿真产物。
 - **MAT-13034 特殊格式**: 该 Issue 的评论中 lh/mh 值含有 Jira Wiki 标记 `{color:#DE350B}`，提取脚本已自动兼容处理。
 - **WIN-1957**: 该 Issue 评论中无 `Result #` 行（旧版未出值），报告将显示"无基准数据"。
-- **基准值提取**: `fetch_jira_baseline.py` 通过 `zepp jira comment list` 提取，确保已安装 zepp CLI 并登录。
+- **基准值提取**: `fetch_jira_baseline.py` 通过 `zepp jira comment list` 提取旧版 `Result #...` 和新版 `Sample` / `Run #...` 评论；新版评论按轮次与新仿真对应轮次比较。确保已安装 zepp CLI 并登录。
 
 ## 数据文件约定
 
 | 类型 | 路径 |
 |------|------|
 | 日志 | `framework/engine/sportEngine/alg_gomore/data_sample/` |
-| offline-simulator 多样本摘要 | `device_multi_sim_<stamp>.json` |
+| 本地配置仿真摘要 | 默认 `/tmp/tmp_lthr_out/lthr_multi_sim/<run_id>/device_multi_sim.json`；显式 `--output-dir` 时为该目录下 `device_multi_sim.json` |
+| Jira 附件仿真摘要 | 默认 `/tmp/tmp_lthr_out/topic_ota/<issue>/offline_sim_<timestamp>/lthr_offline_sim_<issue>_<timestamp>.json` |
 | 输入样本 JSON | Lyon 项目的 `data_sample/`（自动搜索备用目录） |
 | 样本 JSON | 默认任务输出目录下的 `samples_*.json` / `base_data_*.json` |
 | 三源报告 | 默认任务输出目录下的 `garmin_dut_sim_compare_report_*.md` |
@@ -239,7 +269,7 @@ BASE CASE 用步骤 1-10，JIRA CASE 用步骤 11-14。
 
 使用 `--offline-summary` 时，上述 `samples_*.json` / `base_data_*.json` / `sdk_*_sim_report.md` 默认输出到系统临时目录下按 summary 文件名生成的稳定任务目录。其他输入按输入类型和文件名生成对应目录。自动查找输入 JSON 时优先搜索输出目录，再回退搜索 Lyon 项目的 `data_sample/`；显式传入 `--output-dir` 时，输出目录和首选搜索目录都使用该路径。
 
-在 `BASE_CASE + JIRA_CASE` 混合日志场景下，推荐直接用 `--offline-summary` 且不传 `--steps`，让 pipeline 自动串起两套报告；只有在你明确只想跑其中一侧时，才显式写 `--steps 1-10` 或 `--steps 11-14`。
+在 `BASE_CASE + JIRA_CASE` 混合日志场景下，推荐直接用 `--offline-summary` 且不传 `--steps`，让 pipeline 自动串起两套报告；只有在你明确只想跑其中一侧时，才显式写 `--steps 1-10` 或 `--steps 11-14`。BASE/JIRA 样本应放在 `data_sample/BASE_CASE/`、`data_sample/JIRA_CASE/` 下；根目录 CSV 会标记为 `ROOT_CASE`，不会自动归入这两类报告。
 
 ## FAQ
 

@@ -41,6 +41,14 @@ RE_RESULT_LINE = re.compile(
     re.IGNORECASE,
 )
 
+# 新评论格式：先给出 CSV，再列出每轮的结果。
+RE_SAMPLE_LINE = re.compile(r"^\s*\*\s*Sample:\s*(\S+\.csv)\s*\|", re.IGNORECASE)
+RE_RUN_LINE = re.compile(
+    r"^\s*-\s*Run\s*#(\d+):\s*"
+    r"ltSpeed=(\S+)\s+lh=(\S+)\s+mh=(\S+)(?:\s+guideResult=\S+)?",
+    re.IGNORECASE,
+)
+
 # 匹配 userInfo 行
 RE_USER_INFO = re.compile(
     r"userInfo\s*=\s*\[([\d.,\s-]+)\]",
@@ -53,12 +61,34 @@ def _clean_jira_value(raw: str) -> str:
     return raw.strip()
 
 
+def _parse_jira_number(raw: str) -> Optional[float]:
+    """Parse a numeric comment field after removing Jira Wiki color markup."""
+    cleaned = _clean_jira_value(raw)
+    match = re.fullmatch(r"[-+]?\d+(?:\.\d+)?", cleaned)
+    return float(match.group(0)) if match else None
+
+
+def _attach_user_info(entry: dict, current_user_info: Optional[str]) -> None:
+    if current_user_info is None:
+        return
+    parts = [p.strip() for p in current_user_info.split(",")]
+    entry["userInfo"] = {
+        "age": float(parts[0]) if len(parts) > 0 else None,
+        "gender": int(float(parts[1])) if len(parts) > 1 else None,
+        "height": float(parts[2]) if len(parts) > 2 else None,
+        "weight": float(parts[3]) if len(parts) > 3 else None,
+        "hrMax": float(parts[4]) if len(parts) > 4 else None,
+        "hrRest": float(parts[5]) if len(parts) > 5 else None,
+        "unknown": float(parts[6]) if len(parts) > 6 else None,
+    }
+
+
 # ─── 核心函数 ──────────────────────────────────────────────
 
 def fetch_issue_baseline(issue_key: str) -> list:
     """
-    从单个 JIRA Issue 的评论中提取所有 Result 行。
-    返回 [ { file, rows, ltSpeed, lh, mh, userInfo }, ... ]
+    从单个 JIRA Issue 的评论中提取旧 Result 行和新 Sample/Run 行。
+    新格式结果带 round；旧格式结果不带 round，供报告兼容复用。
     """
     cmd = ["zepp", "jira", "comment", "list", issue_key]
     try:
@@ -74,44 +104,69 @@ def fetch_issue_baseline(issue_key: str) -> list:
     lines = r.stdout.split("\n")
     results = []
     current_user_info = None
+    current_sample_file = None
 
     for line in lines:
+        if "【乳酸阈离线仿真结果】" in line:
+            current_sample_file = None
+            current_user_info = None
+
         # 检测 userInfo（可能在下一行）
         ui_m = RE_USER_INFO.search(line)
         if ui_m:
             current_user_info = ui_m.group(1).strip()
 
-        # 检测结果行
+        sample_match = RE_SAMPLE_LINE.search(line)
+        if sample_match:
+            current_sample_file = sample_match.group(1)
+            continue
+
+        # 旧格式：* Result #1: file.csv | rows=N | ltSpeed=... | lh=... | mh=...
         rm = RE_RESULT_LINE.search(line)
         if rm:
             result_num, csv_file, rows, lt_speed, lh_raw, mh_raw = rm.groups()
-            lh = float(_clean_jira_value(lh_raw))
-            mh = float(_clean_jira_value(mh_raw))
+            lt_speed_num = _parse_jira_number(lt_speed)
+            lh = _parse_jira_number(lh_raw)
+            mh = _parse_jira_number(mh_raw)
+            if lt_speed_num is None or lh is None or mh is None:
+                continue
 
             entry = {
                 "result_num": int(result_num),
                 "file": csv_file,
                 "rows": int(rows),
-                "ltSpeed": float(lt_speed),
+                "ltSpeed": lt_speed_num,
                 "lh": lh,
                 "mh": mh,
             }
-
-            # 如果已捕获 userInfo，附加
-            if current_user_info is not None:
-                parts = [p.strip() for p in current_user_info.split(",")]
-                entry["userInfo"] = {
-                    "age": float(parts[0]) if len(parts) > 0 else None,
-                    "gender": int(float(parts[1])) if len(parts) > 1 else None,
-                    "height": float(parts[2]) if len(parts) > 2 else None,
-                    "weight": float(parts[3]) if len(parts) > 3 else None,
-                    "hrMax": float(parts[4]) if len(parts) > 4 else None,
-                    "hrRest": float(parts[5]) if len(parts) > 5 else None,
-                    "unknown": float(parts[6]) if len(parts) > 6 else None,
-                }
-
+            _attach_user_info(entry, current_user_info)
             results.append(entry)
             current_user_info = None  # 重置
+            continue
+
+        # 新格式：每条 Run 绑定最近的 Sample 文件名。
+        run_match = RE_RUN_LINE.search(line)
+        if run_match and current_sample_file:
+            round_num, lt_speed_raw, lh_raw, mh_raw = run_match.groups()
+            lt_speed = _parse_jira_number(lt_speed_raw)
+            lh = _parse_jira_number(lh_raw)
+            mh = _parse_jira_number(mh_raw)
+            # 无效/未出值轮次不能作为旧版阈值基准，但也不代表仿真执行失败。
+            if lt_speed is None or lh is None or mh is None or min(lt_speed, lh, mh) <= 0:
+                continue
+
+            entry = {
+                "result_num": int(round_num),
+                "round": int(round_num),
+                "file": current_sample_file,
+                "rows": None,
+                "ltSpeed": lt_speed,
+                "lh": lh,
+                "mh": mh,
+            }
+            _attach_user_info(entry, current_user_info)
+            results.append(entry)
+            current_user_info = None
 
     return results
 

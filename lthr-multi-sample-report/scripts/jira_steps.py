@@ -33,6 +33,13 @@ def _refresh_jira_samples_from_log(args, dry_run=False):
         "-o", out_path,
         "--case", "JIRA_CASE",
     ]
+    issue_key = getattr(args, "offline_summary_issue_key", "")
+    if not issue_key:
+        jira_issues = getattr(args, "jira_issues", None) or []
+        if len(jira_issues) == 1:
+            issue_key = jira_issues[0]
+    if issue_key:
+        cmd.extend(["--jira-issue-key", issue_key])
     run_cmd(cmd, dry_run=dry_run)
     return out_path
 
@@ -123,6 +130,9 @@ def step_13_jira_report(args, dry_run=False):
         "--old-label", "旧 SDK",
         "-o", out_path,
     ]
+    simulation_status = getattr(args, "offline_summary_status", "")
+    if simulation_status:
+        cmd.extend(["--simulation-status", simulation_status])
     run_cmd(cmd, dry_run=dry_run)
     print(f"  [提示] 查看报告: {out_path}")
     return out_path

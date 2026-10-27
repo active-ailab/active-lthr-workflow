@@ -255,7 +255,7 @@ def get_search_dirs(args) -> list:
 
 
 def resolve_offline_summary(args) -> None:
-    """从 offline-simulator 多样本摘要中恢复报告输入。"""
+    """从 offline-simulator 单样本或多样本摘要中恢复报告输入。"""
     if not getattr(args, "offline_summary", None):
         return
 
@@ -264,6 +264,8 @@ def resolve_offline_summary(args) -> None:
     workflow = summary.get("workflow") or ""
     status = summary.get("status") or ""
     runtime_hint = summary.get("runtime_hint") or ""
+    source = summary.get("source") or {}
+    issue = summary.get("issue") or {}
     log_path = artifacts.get("log_path") or summary.get("log_path")
     # img_log_path 优先级最高：IMG 提取的完整设备日志
     img_log_path = summary.get("img_log_path", "")
@@ -272,11 +274,25 @@ def resolve_offline_summary(args) -> None:
         print(f"[offline-summary] 使用 IMG 提取日志: {img_log_path}")
 
     print(f"[offline-summary] workflow={workflow or '?'} status={status or '?'}")
+    args.offline_summary_status = status
     if runtime_hint:
         print(f"[offline-summary] runtime_hint: {runtime_hint}")
 
-    if workflow and workflow not in {"multi_sample", "img_extract"}:
+    if status in {"partial", "failed"}:
+        print(
+            "[offline-summary] 警告: C 端仿真状态为 {}；报告会保留已产生数据，"
+            "请结合样本状态和原始日志判断未完成部分。".format(status)
+        )
+
+    if workflow and workflow not in {"single_sample", "multi_sample", "img_extract"}:
         print(f"[offline-summary] 警告: 非预期 workflow={workflow}，仍继续尝试解析")
+
+    issue_key = str(issue.get("key") or "").strip()
+    if source.get("kind") == "jira_attachment" and issue_key:
+        args.offline_summary_issue_key = issue_key
+        if not getattr(args, "jira_issues", None):
+            args.jira_issues = [issue_key]
+        print(f"[offline-summary] Jira issue: {issue_key}")
 
     if not args.log_file and log_path:
         args.log_file = log_path

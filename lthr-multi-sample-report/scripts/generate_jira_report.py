@@ -10,7 +10,6 @@ generate_jira_report.py - JIRA CASE 新旧 SDK 对比报告生成器
   python3 generate_jira_report.py \\
     --new-json jira_samples.json \\
     --baseline baseline.json \\
-    --sdk-ver 1.0.16.0 \\
     -o jira_compare_report.md
 
   # 指定旧版 SDK 版本号
@@ -91,7 +90,11 @@ def gender_cn(val):
 
 # ─── 数据匹配 ──────────────────────────────────────────────
 
-def match_baseline(sample_key: str, baseline_data: dict) -> Optional[dict]:
+def match_baseline(
+    sample_key: str,
+    baseline_data: dict,
+    round_num: Optional[int] = None,
+) -> Optional[dict]:
     """
     从基准数据中匹配对应的条目。
     sample_key 格式: "COLOGNE-3107/gomore_data_20260320_110740"
@@ -107,15 +110,31 @@ def match_baseline(sample_key: str, baseline_data: dict) -> Optional[dict]:
     if not issue_results:
         return None
 
-    for entry in issue_results:
-        if entry.get("file", "").startswith(fname):
-            return entry
+    matching = [
+        entry for entry in issue_results
+        if os.path.basename(entry.get("file", "")).casefold() == fname_csv.casefold()
+    ]
+    if not matching:
+        matching = [
+            entry for entry in issue_results
+            if os.path.basename(entry.get("file", "")).casefold().startswith(fname.casefold())
+        ]
+    if not matching and len(issue_results) == 1:
+        # 兼容旧评论：一个 Issue 只有一个 CSV Result 时可直接复用。
+        matching = issue_results
+    if not matching:
+        return None
 
-    # 如果就一个结果，返回第一个（WIN-1957 这种的）
-    if len(issue_results) == 1:
-        return issue_results[0]
+    round_entries = [entry for entry in matching if entry.get("round") is not None]
+    if round_num is not None:
+        if round_entries:
+            return next((entry for entry in round_entries if entry.get("round") == round_num), None)
+        # 旧格式没有轮次字段，沿用单条基准对所有新轮次做比较。
+        return matching[0]
 
-    return None
+    if round_entries:
+        return next((entry for entry in round_entries if entry.get("round") == 1), round_entries[0])
+    return matching[0]
 
 
 # ─── 报告生成 ──────────────────────────────────────────────
@@ -147,6 +166,7 @@ def generate_report(
     new_label: str = "新 SDK",
     old_label: str = "旧 SDK",
     summary_only: bool = False,
+    simulation_status: str = "",
 ) -> str:
     """生成 JIRA CASE 对比报告 Markdown。"""
     lines = []
@@ -157,6 +177,9 @@ def generate_report(
     lines.append(f"| **新版本** | {new_label} |")
     lines.append(f"| **旧版本** | {old_label} |")
     lines.append(f"| **样本数** | {len(new_samples)} |")
+    if simulation_status:
+        status_labels = {"success": "成功", "partial": "部分完成", "failed": "失败"}
+        lines.append(f"| **C 端仿真状态** | {status_labels.get(simulation_status, simulation_status)} |")
     lines.append(f"| **生成时间** | {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')} |")
     lines.append("")
 
@@ -182,12 +205,11 @@ def generate_report(
             samples = issue_groups[issue_key]
             all_ok = True
             for skey, sdata in samples.items():
-                bl = match_baseline(skey, baseline_data)
-                if bl:
-                    for r in sorted(issue_rounds[issue_key]):
-                        vals = extract_round_values(sdata, r)
-                        if vals["lthr"] is not None and abs(vals["lthr"] - bl["lh"]) > 1:
-                            all_ok = False
+                for r in sorted(issue_rounds[issue_key]):
+                    bl = match_baseline(skey, baseline_data, round_num=r)
+                    vals = extract_round_values(sdata, r)
+                    if bl and vals["lthr"] is not None and abs(vals["lthr"] - bl["lh"]) > 1:
+                        all_ok = False
             status = "✅ 一致" if all_ok else "⚠️ 有偏差"
             lines.append(f"| [{issue_key}](https://jira.huami.com/browse/{issue_key}) | {len(samples)} | {status} |")
         lines.append("")
@@ -208,7 +230,7 @@ def generate_report(
         for skey in sorted(samples.keys()):
             sdata = samples[skey]
             csv_fname = skey.split("/")[-1] + ".csv"
-            bl = match_baseline(skey, baseline_data)
+            bl = match_baseline(skey, baseline_data, round_num=1) or match_baseline(skey, baseline_data)
             has_user = sdata.get("年龄") is not None
 
             lines.append(f"### {csv_fname}")
@@ -258,12 +280,13 @@ def generate_report(
                     r_maxhr = vals["maxhr"]
                     r_ltp = vals["ltp"]
                     r_ltp_s = vals["ltp_s"]
+                    round_baseline = match_baseline(skey, baseline_data, round_num=r)
 
                     # 与基准对比
-                    if bl:
-                        lthr_vs = fmt_lthr_change(r_lthr, bl["lh"]) if r_lthr is not None else "—"
+                    if round_baseline:
+                        lthr_vs = fmt_lthr_change(r_lthr, round_baseline["lh"]) if r_lthr is not None else "—"
                         ltp_s_vs = "—"
-                        old_ltp_s = speed_kph_to_pace_seconds(bl["ltSpeed"])
+                        old_ltp_s = speed_kph_to_pace_seconds(round_baseline["ltSpeed"])
                         if r_ltp_s is not None and old_ltp_s is not None:
                             ltp_s_vs = fmt_ltp_change(float(r_ltp_s), old_ltp_s)
                     else:
@@ -297,7 +320,7 @@ def generate_report(
                 invalid_statuses = collect_invalid_round_statuses(sdata)
                 lines.append("#### SDK 仿真结果状态")
                 lines.append("")
-                lines.append("- **说明**: 当前样本未产出有效仿真结果，因此无法生成仿真对比表。")
+                lines.append("- **说明**: 当前样本没有可对比的有效乳酸阈结果；这不代表仿真执行失败，请结合 C 端仿真状态和逐轮日志判断。")
                 if invalid_statuses:
                     for round_num, status in invalid_statuses:
                         lines.append(f"- 第{round_num}轮: {status}")
@@ -307,18 +330,19 @@ def generate_report(
             if len(rounds_present) == 1:
                 r = rounds_present[0]
                 vals = extract_round_values(sdata, r)
+                round_baseline = match_baseline(skey, baseline_data, round_num=r)
                 lines.append(f"#### 与旧版 SDK 对比总结")
                 lines.append("")
-                if bl:
-                    lthr_diff = (vals["lthr"] - bl["lh"]) if vals["lthr"] is not None else None
-                    mh_diff = (vals["maxhr"] - bl["mh"]) if vals["maxhr"] is not None else None
+                if round_baseline:
+                    lthr_diff = (vals["lthr"] - round_baseline["lh"]) if vals["lthr"] is not None else None
+                    mh_diff = (vals["maxhr"] - round_baseline["mh"]) if vals["maxhr"] is not None else None
 
                     if lthr_diff is not None:
                         direction = "偏高" if lthr_diff > 0 else ("偏低" if lthr_diff < 0 else "一致")
-                        lines.append(f"- **LTHR**: 新={vals['lthr']:.0f} vs 旧={bl['lh']:.0f} "
+                        lines.append(f"- **LTHR**: 新={vals['lthr']:.0f} vs 旧={round_baseline['lh']:.0f} "
                                      f"({lthr_diff:+.0f}, 新版本{direction})")
                     if mh_diff is not None:
-                        lines.append(f"- **MAXHR**: 新={vals['maxhr']:.0f} vs 旧={bl['mh']:.0f} "
+                        lines.append(f"- **MAXHR**: 新={vals['maxhr']:.0f} vs 旧={round_baseline['mh']:.0f} "
                                      f"({mh_diff:+.0f})")
                 else:
                     lines.append("- 无旧版基准数据可对比")
@@ -341,12 +365,11 @@ def generate_report(
         # 汇总 LTHR 偏差
         lthr_diffs = []
         for skey, sdata in samples.items():
-            bl = match_baseline(skey, baseline_data)
-            if bl:
-                for r in rds:
-                    v = extract_round_values(sdata, r)["lthr"]
-                    if v is not None:
-                        lthr_diffs.append(v - bl["lh"])
+            for r in rds:
+                bl = match_baseline(skey, baseline_data, round_num=r)
+                v = extract_round_values(sdata, r)["lthr"]
+                if bl and v is not None:
+                    lthr_diffs.append(v - bl["lh"])
 
         if lthr_diffs:
             avg_diff = sum(lthr_diffs) / len(lthr_diffs)
@@ -398,6 +421,7 @@ def main():
     parser.add_argument("--baseline", required=True, help="旧版 SDK 基准值 JSON (fetch_jira_baseline.py 输出)")
     parser.add_argument("--old-label", default="旧 SDK", help="旧版 SDK 标签")
     parser.add_argument("--new-label", default="新 SDK", help="新版 SDK 标签")
+    parser.add_argument("--simulation-status", default="", help="C 端 summary 中的仿真状态")
     parser.add_argument("-o", "--output", default=None, help="输出 Markdown 文件路径")
     parser.add_argument("--summary-only", action="store_true", help="仅输出快速概览表格")
     args = parser.parse_args()
@@ -417,6 +441,7 @@ def main():
         new_label=args.new_label,
         old_label=args.old_label,
         summary_only=args.summary_only,
+        simulation_status=args.simulation_status,
     )
 
     if args.output:

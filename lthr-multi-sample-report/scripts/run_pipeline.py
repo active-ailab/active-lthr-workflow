@@ -27,22 +27,19 @@ JIRA CASE 工作流（步骤11-14）：
   python3 run_pipeline.py --sdk-ver 1.0.15.0 --json data.json --dry-run
 
   # JIRA CASE 全流程（解析→提取基准→对比报告→发布）
-  python3 run_pipeline.py --log-file /path/to/lyon_xxx.log \\
-    --sdk-ver 1.0.16.0 \\
-    --jira-issues COLOGNE-3107 MAT-13034 MOD-7798 MOD-8699 WIN-1957 WIN-2552 \\
+  python3 run_pipeline.py --offline-summary /path/to/lthr_offline_sim_issue_stamp.json \\
     --steps 11-14
 
   # JIRA CASE 仅生成报告（跳过解析和提取）
+  # 没有日志可供自动提取 SDK 版本时，需要显式提供 --sdk-ver
   python3 run_pipeline.py --sdk-ver 1.0.16.0 \\
     --jira-json jira_samples_1.0.16.0.json \\
     --jira-baseline jira_baseline_1.0.16.0.json \\
     --steps 13
 
   # JIRA CASE + BASE CASE 全流程
-  python3 run_pipeline.py --log-file /path/to/lyon_xxx.log \\
-    --sdk-ver 1.0.16.0 \\
+  python3 run_pipeline.py --offline-summary /path/to/offline_sim_summary.json \\
     --base-token X --table-id Y \\
-    --jira-issues COLOGNE-3107 MAT-13034 MOD-7798 MOD-8699 WIN-1957 WIN-2552 \\
     --steps 1-14
 """
 
@@ -83,7 +80,7 @@ def main():
     # 数据来源
     parser.add_argument("--log-file", help="GoMore 日志文件路径 (步骤1)")
     parser.add_argument("--json", dest="json_file", help="样本 JSON 数据文件路径")
-    parser.add_argument("--offline-summary", help="lthr-offline-simulator 多样本 summary JSON 路径")
+    parser.add_argument("--offline-summary", help="lthr-offline-simulator summary JSON 路径")
     parser.add_argument("--case", default="BASE_CASE", help="日志解析过滤 case (默认 BASE_CASE)")
     parser.add_argument("--output-dir", help="报告与中间 JSON 输出目录，默认系统临时目录下按输入文件生成的稳定任务目录")
 
