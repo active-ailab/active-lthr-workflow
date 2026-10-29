@@ -62,16 +62,19 @@ def pace_to_str(lt_speed: float) -> str:
 
 
 def fmt_change(new_val, old_val, fmt="{:.1f}", higher_better=False):
-    """格式化变化值，带 +/- 和百分比。"""
+    """格式化差值列，按变化方向显示差值和百分比。"""
     if old_val is None or new_val is None:
         return "—"
     diff = new_val - old_val
+    diff = float(fmt.format(diff))
+    if diff == 0:
+        diff = 0.0
     if abs(old_val) < 0.001:
         pct = ""
     else:
         pct = f" ({diff/old_val*100:+.1f}%)"
     arrow = "↑" if diff > 0 else ("↓" if diff < 0 else "→")
-    return f"{fmt.format(new_val)} ({arrow}{fmt.format(diff)}{pct})"
+    return f"{arrow}{fmt.format(abs(diff))}{pct}"
 
 
 def fmt_lthr_change(new_val, old_val):
@@ -81,7 +84,7 @@ def fmt_lthr_change(new_val, old_val):
 
 def fmt_ltp_change(new_val, old_val):
     """LTP 变化格式化。"""
-    return fmt_change(new_val, old_val, fmt="{:.2f}")
+    return fmt_change(new_val, old_val, fmt="{:.0f}")
 
 
 def gender_cn(val):
@@ -167,11 +170,19 @@ def generate_report(
     old_label: str = "旧 SDK",
     summary_only: bool = False,
     simulation_status: str = "",
+    baseline_source: str = "",
+    simulation_run_id: str = "",
+    document_owner: str = "",
+    document_organization: str = "",
 ) -> str:
     """生成 JIRA CASE 对比报告 Markdown。"""
     lines = []
     lines.append(f"# JIRA CASE 新旧 SDK 对比报告")
     lines.append("")
+    if document_owner and document_organization:
+        lines.append(f"Owner: {document_owner}  ")
+        lines.append(f"Organization: {document_organization}")
+        lines.append("")
     lines.append(f"| 项目 | 值 |")
     lines.append(f"|------|-----|")
     lines.append(f"| **新版本** | {new_label} |")
@@ -180,6 +191,10 @@ def generate_report(
     if simulation_status:
         status_labels = {"success": "成功", "partial": "部分完成", "failed": "失败"}
         lines.append(f"| **C 端仿真状态** | {status_labels.get(simulation_status, simulation_status)} |")
+    if simulation_run_id:
+        lines.append(f"| **仿真批次** | `{simulation_run_id}` |")
+    if baseline_source:
+        lines.append(f"| **旧版基准来源** | {baseline_source} |")
     lines.append(f"| **生成时间** | {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')} |")
     lines.append("")
 
@@ -254,27 +269,39 @@ def generate_report(
 
             # 基准值
             if bl:
-                lines.append(f"- **{old_label} 基准值**: "
-                             f"LTHR={bl['lh']:.0f} | "
-                             f"MAXHR={bl['mh']:.0f} | "
-                             f"ltSpeed={bl['ltSpeed']:.4f} ({pace_to_str(bl['ltSpeed'])})")
+                if bl.get("pace_precision") == "whole_second_report":
+                    pace_note = "；配速来自历史报告整秒显示"
+                    lines.append(f"- **{old_label} 基准值**: "
+                                 f"LTHR={bl['lh']:.0f} | "
+                                 f"MAXHR={bl['mh']:.0f} | "
+                                 f"LTP={pace_to_str(bl['ltSpeed'])}{pace_note}")
+                else:
+                    lines.append(f"- **{old_label} 基准值**: "
+                                 f"LTHR={bl['lh']:.0f} | "
+                                 f"MAXHR={bl['mh']:.0f} | "
+                                 f"ltSpeed={bl['ltSpeed']:.4f} ({pace_to_str(bl['ltSpeed'])})")
                 if bl.get("rows"):
                     lines.append(f"- **CSV 行数**: {bl['rows']} rows")
             else:
                 lines.append(f"- **{old_label}**: 无基准数据")
             lines.append("")
 
-            # 多轮次对比表
-            if rounds_present:
+            # 多轮次对比表：保留有状态标记但没有有效数值的轮次。
+            sample_rounds = [
+                r for r in range(1, 4)
+                if any(sdata.get(f"仿真{r}_{suffix}") is not None
+                       for suffix in ("LTHR", "LTP", "LTP（S）", "MAXHR", "状态"))
+            ]
+            if sample_rounds:
                 lines.append(f"#### SDK 多轮次结果 vs 旧版基准")
                 lines.append("")
                 # 表头
-                header = "| 轮次 | LTHR | ΔLTHR | MAXHR | LTP (配速) | ΔLTP |"
-                sep = "|------|------|-------|-------|------------|------|"
+                header = "| 轮次 | LTHR | ΔLTHR | MAXHR | LTP (配速) | ΔLTP (秒/公里) | 状态 |"
+                sep = "|------|------|-------|-------|------------|------|------|"
                 lines.append(header)
                 lines.append(sep)
 
-                for r in rounds_present:
+                for r in sample_rounds:
                     vals = extract_round_values(sdata, r)
                     r_lthr = vals["lthr"]
                     r_maxhr = vals["maxhr"]
@@ -296,11 +323,19 @@ def generate_report(
                     ltp_str = f"{r_ltp}" if r_ltp else "—"
                     lthr_str = f"{r_lthr:.0f}" if r_lthr is not None else "—"
                     maxhr_str = f"{r_maxhr:.0f}" if r_maxhr is not None else "—"
+                    round_status = vals["status"] or (
+                        "有效结果" if any(v is not None for v in (r_lthr, r_maxhr, r_ltp_s)) else "未输出"
+                    )
 
                     lines.append(f"| 第{r}轮 | {lthr_str} | {lthr_vs} | "
-                                 f"{maxhr_str} | {ltp_str} | {ltp_s_vs} |")
+                                 f"{maxhr_str} | {ltp_str} | {ltp_s_vs} | {round_status} |")
 
                 lines.append("")
+                invalid_statuses = collect_invalid_round_statuses(sdata)
+                for round_num, status in invalid_statuses:
+                    lines.append(f"- 第{round_num}轮状态：`{status}`")
+                if invalid_statuses:
+                    lines.append("")
 
                 # 稳定性分析
                 lthr_vals = [extract_round_values(sdata, r)["lthr"] for r in rounds_present]
@@ -422,9 +457,16 @@ def main():
     parser.add_argument("--old-label", default="旧 SDK", help="旧版 SDK 标签")
     parser.add_argument("--new-label", default="新 SDK", help="新版 SDK 标签")
     parser.add_argument("--simulation-status", default="", help="C 端 summary 中的仿真状态")
+    parser.add_argument("--baseline-source", default="", help="旧版基准的可审计来源说明")
+    parser.add_argument("--simulation-run-id", default="", help="C 端 summary 中的 run_id")
+    parser.add_argument("--document-owner", default="", help="可选的报告 Owner 元数据")
+    parser.add_argument("--document-organization", default="", help="可选的报告 Organization 元数据")
     parser.add_argument("-o", "--output", default=None, help="输出 Markdown 文件路径")
     parser.add_argument("--summary-only", action="store_true", help="仅输出快速概览表格")
     args = parser.parse_args()
+
+    if bool(args.document_owner) != bool(args.document_organization):
+        parser.error("--document-owner 和 --document-organization 必须一起提供")
 
     if not os.path.isfile(args.new_json):
         print(f"ERROR: 文件不存在: {args.new_json}", file=sys.stderr)
@@ -442,6 +484,10 @@ def main():
         old_label=args.old_label,
         summary_only=args.summary_only,
         simulation_status=args.simulation_status,
+        baseline_source=args.baseline_source,
+        simulation_run_id=args.simulation_run_id,
+        document_owner=args.document_owner,
+        document_organization=args.document_organization,
     )
 
     if args.output:

@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from typing import Optional
@@ -83,6 +84,55 @@ def _attach_user_info(entry: dict, current_user_info: Optional[str]) -> None:
     }
 
 
+def _jira_body_text(value) -> str:
+    """Read Jira Server string bodies and Jira Cloud ADF bodies as plain text."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(filter(None, (_jira_body_text(item) for item in value)))
+    if isinstance(value, dict):
+        if isinstance(value.get("text"), str):
+            return value["text"]
+        return "\n".join(filter(None, (_jira_body_text(item) for item in value.get("content", []))))
+    return ""
+
+
+def _fetch_comment_text(issue_key: str) -> str:
+    """Use CLIs available in the current user's environment; Jira CLI is a read-only fallback."""
+    errors = []
+    if shutil.which("zepp"):
+        try:
+            result = subprocess.run(
+                ["zepp", "jira", "comment", "list", issue_key],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode == 0:
+                return result.stdout
+            errors.append(result.stderr.strip()[:200])
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            errors.append(str(exc))
+
+    if shutil.which("jira"):
+        try:
+            result = subprocess.run(
+                ["jira", "issue", "view", issue_key, "--comments", "100", "--raw"],
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode != 0:
+                errors.append(result.stderr.strip()[:200])
+            else:
+                issue = json.loads(result.stdout)
+                comments = ((issue.get("fields") or {}).get("comment") or {}).get("comments") or []
+                return "\n".join(_jira_body_text(comment.get("body")) for comment in comments)
+        except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError) as exc:
+            errors.append(str(exc))
+
+    detail = "; ".join(error for error in errors if error)
+    if detail:
+        raise RuntimeError(f"当前本地环境的 zepp/jira CLI 均不可用或未认证: {detail}")
+    raise RuntimeError("当前本地环境未找到 zepp 或 jira CLI")
+
+
 # ─── 核心函数 ──────────────────────────────────────────────
 
 def fetch_issue_baseline(issue_key: str) -> list:
@@ -90,18 +140,13 @@ def fetch_issue_baseline(issue_key: str) -> list:
     从单个 JIRA Issue 的评论中提取旧 Result 行和新 Sample/Run 行。
     新格式结果带 round；旧格式结果不带 round，供报告兼容复用。
     """
-    cmd = ["zepp", "jira", "comment", "list", issue_key]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        print(f"  [错误] 运行 zepp 命令失败: {e}", file=sys.stderr)
+        comment_text = _fetch_comment_text(issue_key)
+    except RuntimeError as e:
+        print(f"  [错误] {issue_key}: 无法读取 Jira 评论: {e}", file=sys.stderr)
         return []
 
-    if r.returncode != 0:
-        print(f"  [错误] {issue_key}: zepp comment list 返回错误: {r.stderr.strip()[:200]}", file=sys.stderr)
-        return []
-
-    lines = r.stdout.split("\n")
+    lines = comment_text.split("\n")
     results = []
     current_user_info = None
     current_sample_file = None

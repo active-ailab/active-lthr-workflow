@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -17,6 +18,70 @@ from _pipeline_common import (
 )
 from _report_utils import run_lark
 from base_steps import ensure_version_folder
+
+
+def _overlay_jira_results_from_offline_summary(summary_path, samples_path):
+    """Use the C-side per-sample result list to repair interleaved/missing log headers."""
+    if not summary_path or not os.path.isfile(summary_path) or not os.path.isfile(samples_path):
+        return False
+    with open(summary_path, "r", encoding="utf-8") as stream:
+        summary = json.load(stream)
+    sample_rows = summary.get("samples") or (summary.get("simulation") or {}).get("samples") or []
+    if summary.get("workflow") != "multi_sample" or not sample_rows:
+        return False
+
+    with open(samples_path, "r", encoding="utf-8") as stream:
+        parsed = json.load(stream)
+    overlaid = 0
+    for row in sample_rows:
+        sample_path = str(row.get("sample_path") or "").replace("\\", "/")
+        parts = [part for part in sample_path.split("/") if part]
+        try:
+            case_index = parts.index("JIRA_CASE")
+            issue_key = parts[case_index + 1].upper()
+            filename = parts[-1]
+        except (ValueError, IndexError):
+            continue
+        sample_key = f"{issue_key}/{os.path.splitext(filename)[0]}"
+        sample_data = parsed.setdefault(sample_key, {})
+        for run_num in range(1, 4):
+            prefix = f"仿真{run_num}"
+            for suffix in ("_LTHR", "_LTP", "_LTP（S）", "_MAXHR", "_状态"):
+                sample_data[prefix + suffix] = None
+
+        for result in row.get("results") or []:
+            run_num = result.get("run")
+            if not isinstance(run_num, int) or run_num < 1 or run_num > 3:
+                continue
+            prefix = f"仿真{run_num}"
+            speed = result.get("ltSpeed")
+            lthr = result.get("lh")
+            maxhr = result.get("mh")
+            if result.get("result_missing") or speed is None or lthr is None or maxhr is None:
+                sample_data[prefix + "_状态"] = "result_missing: C-side summary has no algorithm output"
+                continue
+            speed = float(speed)
+            lthr = float(lthr)
+            maxhr = float(maxhr)
+            if speed <= 0 or lthr <= 0 or maxhr <= 0:
+                sample_data[prefix + "_状态"] = (
+                    f"invalid_result: ltSpeed={speed:.3f}, lh={int(lthr)}, mh={int(maxhr)}"
+                )
+                continue
+            pace_seconds_exact = 3600.0 / speed
+            minutes, seconds = divmod(int(round(pace_seconds_exact)), 60)
+            sample_data[prefix + "_LTHR"] = int(lthr)
+            sample_data[prefix + "_LTP"] = f"{minutes}'{seconds:02d}"
+            sample_data[prefix + "_LTP（S）"] = pace_seconds_exact
+            sample_data[prefix + "_MAXHR"] = int(maxhr)
+        overlaid += 1
+
+    if not overlaid:
+        return False
+    with open(samples_path, "w", encoding="utf-8") as stream:
+        json.dump(parsed, stream, ensure_ascii=False, indent=2)
+    print(f"  [对齐] 已用 C 端 summary 校准 {overlaid} 个 JIRA_CASE 样本的轮次结果")
+    return True
 
 
 def _refresh_jira_samples_from_log(args, dry_run=False):
@@ -41,6 +106,10 @@ def _refresh_jira_samples_from_log(args, dry_run=False):
     if issue_key:
         cmd.extend(["--jira-issue-key", issue_key])
     run_cmd(cmd, dry_run=dry_run)
+    if not dry_run:
+        _overlay_jira_results_from_offline_summary(
+            getattr(args, "offline_summary", None), out_path
+        )
     return out_path
 
 
@@ -76,6 +145,9 @@ def step_11_jira_parse_log(args, dry_run=False):
 def step_12_jira_fetch_baseline(args, dry_run=False):
     """步骤12: 从 JIRA 评论提取旧版基准值。"""
     log_step(12, "提取 JIRA 基准值")
+    if getattr(args, "jira_baseline", None) and os.path.isfile(args.jira_baseline):
+        print(f"  [复用] 使用指定的版本基准: {args.jira_baseline}")
+        return args.jira_baseline
     if not args.jira_issues:
         candidate_json = args.jira_json
         if not candidate_json:
@@ -127,12 +199,23 @@ def step_13_jira_report(args, dry_run=False):
         "--new-json", jira_json,
         "--baseline", baseline_json,
         "--new-label", f"SDK {args.sdk_ver}",
-        "--old-label", "旧 SDK",
+        "--old-label", f"SDK {args.prev_ver}" if getattr(args, "prev_ver", None) else "旧 SDK",
         "-o", out_path,
     ]
     simulation_status = getattr(args, "offline_summary_status", "")
     if simulation_status:
         cmd.extend(["--simulation-status", simulation_status])
+    run_id = getattr(args, "offline_summary_run_id", "")
+    if run_id:
+        cmd.extend(["--simulation-run-id", run_id])
+    baseline_source = getattr(args, "jira_baseline_source", "")
+    if baseline_source:
+        cmd.extend(["--baseline-source", baseline_source])
+    document_owner = getattr(args, "report_owner", "")
+    document_organization = getattr(args, "report_organization", "")
+    if document_owner and document_organization:
+        cmd.extend(["--document-owner", document_owner])
+        cmd.extend(["--document-organization", document_organization])
     run_cmd(cmd, dry_run=dry_run)
     print(f"  [提示] 查看报告: {out_path}")
     return out_path

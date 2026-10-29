@@ -275,6 +275,7 @@ def resolve_offline_summary(args) -> None:
 
     print(f"[offline-summary] workflow={workflow or '?'} status={status or '?'}")
     args.offline_summary_status = status
+    args.offline_summary_run_id = str(summary.get("run_id") or "")
     if runtime_hint:
         print(f"[offline-summary] runtime_hint: {runtime_hint}")
 

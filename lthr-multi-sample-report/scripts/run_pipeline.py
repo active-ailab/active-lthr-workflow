@@ -99,6 +99,9 @@ def main():
     parser.add_argument("--jira-issues", nargs="*", help="JIRA Issue key 列表 (步骤12)，如 COLOGNE-3107 MOD-7798")
     parser.add_argument("--jira-json", help="JIRA 样本 JSON 路径 (步骤13，覆盖自动推断)")
     parser.add_argument("--jira-baseline", help="JIRA 基准 JSON 路径 (步骤13，覆盖自动推断)")
+    parser.add_argument("--jira-baseline-source", help="JIRA 旧版基准的可审计来源说明")
+    parser.add_argument("--report-owner", help="可选的报告 Owner 元数据")
+    parser.add_argument("--report-organization", help="可选的报告 Organization 元数据")
 
     # 流程控制
     parser.add_argument("--steps", default="1-10", help="执行步骤范围，如 '1-10', '4-6', '1,3,5', '11-14'")
@@ -107,6 +110,8 @@ def main():
     parser.add_argument("--all-fields", action="store_true", help="单版本报告包含完整字段")
 
     args = parser.parse_args()
+    if bool(args.report_owner) != bool(args.report_organization):
+        parser.error("--report-owner 和 --report-organization 必须一起提供")
     steps_explicit = "--steps" in sys.argv
 
     # 从 _pipeline_config.py 加载默认凭证（固化到 skill 中）

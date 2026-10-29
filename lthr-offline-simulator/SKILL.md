@@ -1,8 +1,6 @@
 ---
 name: lthr-offline-simulator
 description: "通过仓库内固定 Python 入口对 GoMore 离线 CSV 执行配置驱动仿真，并提取 C 端结果和历史归档；也用于乳酸阈引导测试目标心率区间/百分比计算。设备操作由 watchlink-v3 提供。触发词: gomore offline csv test, data_sample, 单样本仿真, 多样本, 多轮仿真, utest, Jira回传, 乳酸阈引导测试, maxHr, restHr。"
-Owner: cs-dongqi@zepp.com
-Organization: Active.Bu
 ---
 
 # LTHR Offline Simulator
@@ -63,6 +61,8 @@ python3 scripts/run_device_multi_sim.py \
   --mode single_person_multi_sample \
   --rounds 3
 ```
+
+`--data-dir` 必须指向 case 目录的父级 `data_sample`，例如 `data_sample/BASE_CASE/<sample>/gomore_data_*.csv`。如果从飞书只下载 `BASE_CASE` 文件夹的内容，先在本地 `data_sample/BASE_CASE/` 下还原这一层，再把 `data_sample/` 传给 `--data-dir`；不要直接把 `data_sample/BASE_CASE/` 传入。否则 UTest 日志会把样本标为 `ROOT_CASE`，报告侧的 `--case BASE_CASE` 不会提取到这些样本。
 
 可选模式：
 

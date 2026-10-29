@@ -32,6 +32,11 @@ def _fix_val(v):
     return v
 
 
+def _display(v):
+    """将缺失值渲染为空单元格，同时保留数值 0。"""
+    return "" if v is None or v == "" else v
+
+
 def load_from_json(json_path):
     """从本地 JSON 文件加载数据，兼容多种格式"""
     with open(json_path, "r", encoding="utf-8") as f:
@@ -72,14 +77,14 @@ def load_from_base(base_token, table_id):
     return _payload_to_records(payload, value_normalizer=_fix_val)
 
 
-def generate_report(raw_data, sdk_version, all_fields=False):
+def generate_report(raw_data, sdk_version, all_fields=False, data_source="本地 JSON 数据"):
     """生成完整 Markdown 报告"""
     lines = []
     lines.append(f"# SDK {sdk_version} 版本仿真测试结果")
     lines.append("")
     lines.append(f"> 生成时间: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}")
     lines.append(f"> 样本数: {len(raw_data)} 个")
-    lines.append("> 数据来源: Feishu Base - 乳酸阈多样本仿真测试结果")
+    lines.append(f"> 数据来源: {data_source}")
     lines.append(f"> 说明: 本报告展示 SDK v{sdk_version} 在 {len(raw_data)} 个样本上的 3 轮仿真测试结果，")
     lines.append("> 包含乳酸阈值心率(LTHR)、配速(LTP)、配速秒数(LTP(S))、最大心率(MAXHR) 四个核心指标。")
     lines.append("")
@@ -91,9 +96,9 @@ def generate_report(raw_data, sdk_version, all_fields=False):
     lines.append("|------|:---:|:----:|:--------:|:--------:|:--------:|:-------:|:----:|")
     for sid in sorted(raw_data.keys()):
         rec = raw_data[sid]
-        lines.append(f"| {sid} | {rec.get('年龄', '')} | {rec.get('性别', '')} | "
-                     f"{rec.get('身高', '')} | {rec.get('体重', '')} | {rec.get('静息', '')} | "
-                     f"{rec.get('220-age', '')} | {rec.get('样本分组', rec.get('group', ''))} |")
+        lines.append(f"| {sid} | {_display(rec.get('年龄'))} | {_display(rec.get('性别'))} | "
+                     f"{_display(rec.get('身高'))} | {_display(rec.get('体重'))} | {_display(rec.get('静息'))} | "
+                     f"{_display(rec.get('220-age'))} | {_display(rec.get('样本分组', rec.get('group', '')))} |")
     lines.append("")
 
     # === 2. 仿真结果总表 ===
@@ -128,8 +133,8 @@ def generate_report(raw_data, sdk_version, all_fields=False):
         avg_s = round(sum(vals) / len(vals)) if vals else 0
         rng = max(vals) - min(vals) if len(vals) > 1 else 0
         consistent = "✅" if rng <= 2 else "❌"
-        lines.append(f"| {sid} | {rec.get('仿真1_LTP', '')} | {rec.get('仿真2_LTP', '')} | "
-                     f"{rec.get('仿真3_LTP', '')} | {pace_format(avg_s) if vals else ''} | {rng} | {consistent} |")
+        lines.append(f"| {sid} | {_display(rec.get('仿真1_LTP'))} | {_display(rec.get('仿真2_LTP'))} | "
+                     f"{_display(rec.get('仿真3_LTP'))} | {pace_format(avg_s) if vals else ''} | {rng} | {consistent} |")
     lines.append("")
 
     lines.append("### 2.3 配速秒数 (LTP(S))")
@@ -265,12 +270,12 @@ def generate_report(raw_data, sdk_version, all_fields=False):
         for sid in sorted(raw_data.keys()):
             rec = raw_data[sid]
             lines.append(
-                f"| {sid} | {rec.get('年龄','')} | {rec.get('性别','')} | "
-                f"{rec.get('身高','')} | {rec.get('体重','')} | {rec.get('静息','')} | {rec.get('220-age','')} | "
-                f"{rec.get('仿真1_LTHR','')} | {rec.get('仿真2_LTHR','')} | {rec.get('仿真3_LTHR','')} | "
-                f"{rec.get('仿真1_LTP','')} | {rec.get('仿真2_LTP','')} | {rec.get('仿真3_LTP','')} | "
-                f"{rec.get('仿真1_LTP（S）','')} | {rec.get('仿真2_LTP（S）','')} | {rec.get('仿真3_LTP（S）','')} | "
-                f"{rec.get('仿真1_MAXHR','')} | {rec.get('仿真2_MAXHR','')} | {rec.get('仿真3_MAXHR','')} |"
+                f"| {sid} | {_display(rec.get('年龄'))} | {_display(rec.get('性别'))} | "
+                f"{_display(rec.get('身高'))} | {_display(rec.get('体重'))} | {_display(rec.get('静息'))} | {_display(rec.get('220-age'))} | "
+                f"{_display(rec.get('仿真1_LTHR'))} | {_display(rec.get('仿真2_LTHR'))} | {_display(rec.get('仿真3_LTHR'))} | "
+                f"{_display(rec.get('仿真1_LTP'))} | {_display(rec.get('仿真2_LTP'))} | {_display(rec.get('仿真3_LTP'))} | "
+                f"{_display(rec.get('仿真1_LTP（S）'))} | {_display(rec.get('仿真2_LTP（S）'))} | {_display(rec.get('仿真3_LTP（S）'))} | "
+                f"{_display(rec.get('仿真1_MAXHR'))} | {_display(rec.get('仿真2_MAXHR'))} | {_display(rec.get('仿真3_MAXHR'))} |"
             )
 
     lines.append("")
@@ -290,6 +295,7 @@ def main():
     parser.add_argument("--sdk-version", required=True, help="SDK 版本号 (如 1.0.15.0)")
     parser.add_argument("-o", "--output", required=True, help="输出 Markdown 文件路径")
     parser.add_argument("--all-fields", action="store_true", help="输出包含完整字段的数据表")
+    parser.add_argument("--data-source", default=None, help="报告中展示的数据来源说明")
     args = parser.parse_args()
 
     if args.json:
@@ -300,7 +306,8 @@ def main():
         print("错误: 需要 --json 或 (--base-token + --table-id)", file=sys.stderr)
         sys.exit(1)
 
-    report = generate_report(raw_data, args.sdk_version, all_fields=args.all_fields)
+    data_source = args.data_source or ("本地 JSON 数据" if args.json else "Feishu Base - 乳酸阈多样本仿真测试结果")
+    report = generate_report(raw_data, args.sdk_version, all_fields=args.all_fields, data_source=data_source)
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output)) or ".", exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:

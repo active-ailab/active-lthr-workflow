@@ -25,6 +25,11 @@ def _fix_val(value):
     return value
 
 
+def _display(value):
+    """将缺失值渲染为空单元格，同时保留数值 0。"""
+    return "" if value is None or value == "" else value
+
+
 def pace_diff(p1, p2):
     """计算配速差值 (秒)，正数表示 p1 比 p2 慢。"""
     s1 = parse_pace_to_seconds(p1)
@@ -183,7 +188,7 @@ def classify_error(diff, metric="LTHR"):
     return "❌ 偏差大"
 
 
-def generate_report(records, sdk_version="?", report_date=None, base_url=""):
+def generate_report(records, sdk_version="?", report_date=None, base_url="", data_source="本地 JSON 数据"):
     if report_date is None:
         report_date = datetime.datetime.now().strftime("%Y-%m-%d")
 
@@ -208,7 +213,7 @@ def generate_report(records, sdk_version="?", report_date=None, base_url=""):
     lines.append(f"# Garmin vs DUT vs SDK 仿真三源对比报告 (SDK v{sdk_version})")
     lines.append("")
     lines.append(f"> 生成时间: {report_date}")
-    lines.append("> 数据来源: Feishu Base - 乳酸阈多样本仿真测试结果")
+    lines.append(f"> 数据来源: {data_source}")
     lines.append(f"> 样本数: {len(records)} 个")
     lines.append("")
     lines.append(f"> **说明**: 本报告中 \"仿真_1\" 表示被测 SDK (v{sdk_version}) 的首次仿真结果，")
@@ -250,9 +255,9 @@ def generate_report(records, sdk_version="?", report_date=None, base_url=""):
     lines.append("|------|------|------|------|------|------|---------|------|")
     for rec in records:
         lines.append(
-            f"| {rec['样本']} | {rec.get('年龄', '')} | {rec.get('性别', '')} | "
-            f"{rec.get('身高', '')} | {rec.get('体重', '')} | {rec.get('静息', '')} | "
-            f"{rec.get('220-age', '')} | {rec.get('样本分组', '')} |"
+            f"| {rec['样本']} | {_display(rec.get('年龄'))} | {_display(rec.get('性别'))} | "
+            f"{_display(rec.get('身高'))} | {_display(rec.get('体重'))} | {_display(rec.get('静息'))} | "
+            f"{_display(rec.get('220-age'))} | {_display(rec.get('样本分组'))} |"
         )
 
     lines.append("")
@@ -276,7 +281,7 @@ def generate_report(records, sdk_version="?", report_date=None, base_url=""):
         else:
             gs1_s = "N/A"
         ds1_s = f"{ds1:+d}" if ds1 is not None else "N/A"
-        lines.append(f"| {rec['样本']} | {g} | {d} | {s1} | {gd_s} | {gs1_s} | {ds1_s} |")
+        lines.append(f"| {rec['样本']} | {_display(g)} | {_display(d)} | {_display(s1)} | {gd_s} | {gs1_s} | {ds1_s} |")
 
     lines.append("")
     lines.append("### 2.2 配速 (LTP) 对比")
@@ -297,7 +302,7 @@ def generate_report(records, sdk_version="?", report_date=None, base_url=""):
         else:
             gs1_s = "N/A"
         ds1_s = f"{ds1:+d}" if ds1 is not None else "N/A"
-        lines.append(f"| {rec['样本']} | {g} | {d} | {s1} | {gd_s}s | {gs1_s}s | {ds1_s}s |")
+        lines.append(f"| {rec['样本']} | {_display(g)} | {_display(d)} | {_display(s1)} | {gd_s}s | {gs1_s}s | {ds1_s}s |")
 
     lines.append("")
     lines.append("### 2.3 LTP(S) 对比")
@@ -318,7 +323,7 @@ def generate_report(records, sdk_version="?", report_date=None, base_url=""):
         else:
             gs1_s = "N/A"
         ds1_s = f"{ds1:+d}" if ds1 is not None else "N/A"
-        lines.append(f"| {rec['样本']} | {g} | {d} | {s1} | {gd_s} | {gs1_s} | {ds1_s} |")
+        lines.append(f"| {rec['样本']} | {_display(g)} | {_display(d)} | {_display(s1)} | {gd_s} | {gs1_s} | {ds1_s} |")
 
     lines.append("")
     lines.append("### 2.4 最大心率 (HRmax) 对比")
@@ -339,7 +344,7 @@ def generate_report(records, sdk_version="?", report_date=None, base_url=""):
         else:
             gs1_s = "N/A"
         ds1_s = f"{ds1:+d}" if ds1 is not None else "N/A"
-        lines.append(f"| {rec['样本']} | {g} | {d} | {s1} | {gd_s} | {gs1_s} | {ds1_s} |")
+        lines.append(f"| {rec['样本']} | {_display(g)} | {_display(d)} | {_display(s1)} | {gd_s} | {gs1_s} | {ds1_s} |")
 
     lines.append("")
     lines.append("## 3. SDK 仿真三轮一致性分析")
@@ -369,7 +374,7 @@ def generate_report(records, sdk_version="?", report_date=None, base_url=""):
         err_cls = classify_error(result["DUT_vs_Sim_LTHR"], "LTHR")
         diff_str = f"{result['DUT_vs_Sim_LTHR']:+.1f}" if result["DUT_vs_Sim_LTHR"] is not None else "N/A"
         avg_str = str(result["avg_sim_LTHR"]) if result["avg_sim_LTHR"] is not None else "N/A"
-        lines.append(f"| {result['样本']} | {rec.get('DUT_LTHR', '')} | {avg_str} | {diff_str} | {err_cls} |")
+        lines.append(f"| {result['样本']} | {_display(rec.get('DUT_LTHR'))} | {avg_str} | {diff_str} | {err_cls} |")
 
     lines.append("")
     lines.append("### 4.2 配速 (LTP) 对比")
@@ -379,10 +384,10 @@ def generate_report(records, sdk_version="?", report_date=None, base_url=""):
     for result in dut_sim:
         rec = record_by_sample[result["样本"]]
         diff_str = f"{result['DUT_vs_Sim_LTP_sec']:+.1f}" if result["DUT_vs_Sim_LTP_sec"] is not None else "N/A"
-        lines.append(f"| {result['样本']} | {rec.get('DUT_LTP', '')} | {result.get('avg_sim_LTP', 'N/A')} | {diff_str}s |")
+        lines.append(f"| {result['样本']} | {_display(rec.get('DUT_LTP'))} | {_display(result.get('avg_sim_LTP')) or 'N/A'} | {diff_str}s |")
 
     lines.append("")
-    lines.append("## 5. 数据表（Base 快照）")
+    lines.append("## 5. 数据表（整合视图）")
     if base_url:
         lines.append("")
         lines.append(f"> 完整数据见飞书 Base: {base_url}")
@@ -391,17 +396,17 @@ def generate_report(records, sdk_version="?", report_date=None, base_url=""):
     lines.append("|------|------|------|------|------|------|---------|------------|----------|-----------|-----------|-----------|-----------|---------|-----------|-----------|-----------|--------------|------------|-------------|-------------|-------------|-------------|-----------|------------|------------|------------|---------|")
     for rec in records:
         lines.append(
-            f"| {rec['样本']} | {rec.get('年龄', '')} | {rec.get('性别', '')} | "
-            f"{rec.get('身高', '')} | {rec.get('体重', '')} | {rec.get('静息', '')} | {rec.get('220-age', '')} | "
-            f"{rec.get('Garmin_LTHR', '')} | {rec.get('DUT_LTHR', '')} | "
-            f"{rec.get('仿真1_LTHR', '')} | {rec.get('仿真2_LTHR', '')} | {rec.get('仿真3_LTHR', '')} | "
-            f"{rec.get('Garmin_LTP', '')} | {rec.get('DUT_LTP', '')} | "
-            f"{rec.get('仿真1_LTP', '')} | {rec.get('仿真2_LTP', '')} | {rec.get('仿真3_LTP', '')} | "
-            f"{rec.get('Garmin_LTP(S)', '')} | {rec.get('DUT_LTP（S）', '')} | "
-            f"{rec.get('仿真1_LTP（S）', '')} | {rec.get('仿真2_LTP（S）', '')} | {rec.get('仿真3_LTP（S）', '')} | "
-            f"{rec.get('Garmin_HRmax', '')} | {rec.get('DUT_HRmax', '')} | "
-            f"{rec.get('仿真1_MAXHR', '')} | {rec.get('仿真2_MAXHR', '')} | {rec.get('仿真3_MAXHR', '')} | "
-            f"{rec.get('样本分组', '')} |"
+            f"| {rec['样本']} | {_display(rec.get('年龄'))} | {_display(rec.get('性别'))} | "
+            f"{_display(rec.get('身高'))} | {_display(rec.get('体重'))} | {_display(rec.get('静息'))} | {_display(rec.get('220-age'))} | "
+            f"{_display(rec.get('Garmin_LTHR'))} | {_display(rec.get('DUT_LTHR'))} | "
+            f"{_display(rec.get('仿真1_LTHR'))} | {_display(rec.get('仿真2_LTHR'))} | {_display(rec.get('仿真3_LTHR'))} | "
+            f"{_display(rec.get('Garmin_LTP'))} | {_display(rec.get('DUT_LTP'))} | "
+            f"{_display(rec.get('仿真1_LTP'))} | {_display(rec.get('仿真2_LTP'))} | {_display(rec.get('仿真3_LTP'))} | "
+            f"{_display(rec.get('Garmin_LTP(S)'))} | {_display(rec.get('DUT_LTP（S）'))} | "
+            f"{_display(rec.get('仿真1_LTP（S）'))} | {_display(rec.get('仿真2_LTP（S）'))} | {_display(rec.get('仿真3_LTP（S）'))} | "
+            f"{_display(rec.get('Garmin_HRmax'))} | {_display(rec.get('DUT_HRmax'))} | "
+            f"{_display(rec.get('仿真1_MAXHR'))} | {_display(rec.get('仿真2_MAXHR'))} | {_display(rec.get('仿真3_MAXHR'))} | "
+            f"{_display(rec.get('样本分组'))} |"
         )
 
     lines.append("")
@@ -417,6 +422,7 @@ def main():
     parser.add_argument("-o", "--output", required=True, help="输出 Markdown 文件路径")
     parser.add_argument("--report-date", help="报告日期 (默认今天)")
     parser.add_argument("--base-url", help="飞书 Base 链接 (用于报告内引用)")
+    parser.add_argument("--data-source", default="本地 JSON 数据", help="报告中展示的数据来源说明")
     args = parser.parse_args()
 
     records = load_records(args.json)
@@ -425,6 +431,7 @@ def main():
         sdk_version=args.sdk_version,
         report_date=args.report_date,
         base_url=args.base_url or "",
+        data_source=args.data_source,
     )
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output)) or ".", exist_ok=True)

@@ -42,7 +42,9 @@ RE_SAMPLE_HEADER = re.compile(
     re.IGNORECASE,
 )
 RE_USER_INFO = re.compile(
-    r"User:\s*age\s*=\s*([\d.]+)\s*,\s*gender\s*=\s*(\d+)\s*,\s*height\s*=\s*([\d.]+)\s*,\s*weight\s*=\s*([\d.]+).*?hrRest\s*=\s*([\d.]+)",
+    r"User:\s*age\s*=\s*([\d.]+)(?:,\s*|\s+)gender\s*=\s*(\d+)"
+    r"(?:,\s*|\s+)height\s*=\s*([\d.]+)(?:,\s*|\s+)weight\s*=\s*([\d.]+)"
+    r".*?hrRest\s*=\s*([\d.]+)",
     re.IGNORECASE,
 )
 RE_BASE_LINE = re.compile(
