@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import argparse
 import re
 import time
 import uuid
 from pathlib import Path, PurePosixPath
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence
 
 CONFIG_NAME = "sim_config.ini"
 RESULT_NAME = "sim_result.ini"
@@ -19,6 +20,9 @@ MODES = {
 MAX_SAMPLES = 64
 MAX_SAMPLE_PATH = 256
 MAX_RUN_ID = 48
+UINT32_MAX = (1 << 32) - 1
+DEFAULT_INTERVAL_SECONDS = 86400
+MAX_CSV_ROWS = 20000
 
 RESULT_LINE_RE = re.compile(
     r"Gomore output ltSpeed=(?P<ltSpeed>[-+]?\d+(?:\.\d+)?) "
@@ -33,6 +37,41 @@ SAMPLE_PROGRESS_RE = re.compile(
 
 def make_run_id() -> str:
     return "sim_{}_{}".format(time.strftime("%Y%m%d_%H%M%S", time.localtime()), uuid.uuid4().hex[:8])
+
+
+def add_simulation_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--start-time", type=int, help="Unix UTC seconds; omitted: current device time")
+    parser.add_argument("--interval-seconds", type=int, help="Interval between simulation starts in seconds (default: 86400)")
+    parser.add_argument("--clear-history-on-start", type=int, choices=(0, 1),
+                        help="single_sample only: 1 starts with empty history (default), 0 reuses original history")
+    parser.add_argument("--clear-history-on-end", type=int, choices=(0, 1),
+                        help="single_sample only: 1 archives simulation history and restores original (default), 0 keeps simulation history active")
+
+
+def simulation_options_from_args(args: argparse.Namespace) -> Dict[str, Optional[int]]:
+    return {key: getattr(args, key) for key in (
+        "start_time", "interval_seconds", "clear_history_on_start", "clear_history_on_end",
+    )}
+
+
+def validate_simulation_options(
+    mode: str,
+    *,
+    start_time: Optional[int] = None,
+    interval_seconds: Optional[int] = None,
+    clear_history_on_start: Optional[int] = None,
+    clear_history_on_end: Optional[int] = None,
+) -> None:
+    for key, value in (("start_time", start_time), ("interval_seconds", interval_seconds)):
+        if value is not None and (type(value) is not int or not 1 <= value <= UINT32_MAX):
+            raise ValueError("{} must be an integer between 1 and {}".format(key, UINT32_MAX))
+    for key, value in (("clear_history_on_start", clear_history_on_start),
+                       ("clear_history_on_end", clear_history_on_end)):
+        if value is not None:
+            if type(value) is not int or value not in (0, 1):
+                raise ValueError("{} must be 0 or 1".format(key))
+            if mode != "single_sample":
+                raise ValueError("{} requires single_sample mode".format(key))
 
 
 def collect_sample_paths(data_sample_dir: Path) -> List[Path]:
@@ -66,19 +105,30 @@ def render_config(
     mode: str,
     rounds: int,
     sample_paths: Sequence[str],
+    start_time: Optional[int] = None,
+    interval_seconds: Optional[int] = None,
+    clear_history_on_start: Optional[int] = None,
+    clear_history_on_end: Optional[int] = None,
 ) -> str:
     if mode not in MODES:
         raise ValueError("mode must be one of: " + ", ".join(sorted(MODES)))
     if not run_id or len(run_id) > MAX_RUN_ID or not re.fullmatch(r"[A-Za-z0-9_-]+", run_id):
         raise ValueError("run_id must be 1-48 ASCII letters, digits, '_' or '-'")
-    if rounds <= 0:
-        raise ValueError("rounds must be greater than zero")
+    if type(rounds) is not int or not 1 <= rounds <= UINT32_MAX:
+        raise ValueError("rounds must be between 1 and {}".format(UINT32_MAX))
     if not sample_paths or len(sample_paths) > MAX_SAMPLES:
         raise ValueError("sample_count must be between 1 and 64")
     if mode == "single_sample" and len(sample_paths) != 1:
         raise ValueError("single_sample mode requires exactly one sample")
     if mode != "single_sample" and len(sample_paths) < 2:
         raise ValueError("multi-sample modes require at least two samples")
+    options = dict(start_time=start_time, interval_seconds=interval_seconds,
+                   clear_history_on_start=clear_history_on_start, clear_history_on_end=clear_history_on_end)
+    validate_simulation_options(mode, **options)
+    if start_time is not None:
+        max_index = rounds - 1 if mode == "multi_person_multi_sample" else rounds * len(sample_paths) - 1
+        if start_time + max_index * (interval_seconds or DEFAULT_INTERVAL_SECONDS) + MAX_CSV_ROWS + 1 > UINT32_MAX:
+            raise ValueError("configured_time_axis_overflow: start time, interval and rounds exceed C timestamp range")
 
     lines = [
         "version=1",
@@ -87,6 +137,7 @@ def render_config(
         "rounds={}".format(rounds),
         "sample_count={}".format(len(sample_paths)),
     ]
+    lines.extend("{}={}".format(key, value) for key, value in options.items() if value is not None)
     for index, path in enumerate(sample_paths):
         lines.append("sample.{}={}".format(index, _validate_relative_sample_path(path)))
     return "\n".join(lines) + "\n"
@@ -99,13 +150,20 @@ def write_config(
     mode: str,
     rounds: int,
     sample_paths: Sequence[str],
+    start_time: Optional[int] = None,
+    interval_seconds: Optional[int] = None,
+    clear_history_on_start: Optional[int] = None,
+    clear_history_on_end: Optional[int] = None,
 ) -> Path:
+    config_text = render_config(
+        run_id=run_id, mode=mode, rounds=rounds, sample_paths=sample_paths,
+        start_time=start_time, interval_seconds=interval_seconds,
+        clear_history_on_start=clear_history_on_start, clear_history_on_end=clear_history_on_end,
+    )
     path = data_sample_dir / CONFIG_NAME
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as stream:
-        stream.write(
-            render_config(run_id=run_id, mode=mode, rounds=rounds, sample_paths=sample_paths)
-        )
+        stream.write(config_text)
     return path
 
 
@@ -134,6 +192,10 @@ def validate_result(
     expected_mode: str = "",
     expected_rounds: int = 0,
     expected_sample_count: int = 0,
+    expected_start_time: Optional[int] = None,
+    expected_interval_seconds: Optional[int] = None,
+    expected_clear_history_on_start: Optional[int] = None,
+    expected_clear_history_on_end: Optional[int] = None,
 ) -> None:
     if result.get("version") != "1":
         raise RuntimeError("sim_result.ini has an unsupported or missing version")
@@ -151,6 +213,25 @@ def validate_result(
         raise RuntimeError("sim_result.ini rounds do not match sim_config.ini")
     if expected_sample_count and str(result.get("sample_count")) != str(expected_sample_count):
         raise RuntimeError("sim_result.ini sample_count does not match sim_config.ini")
+    for key, expected, default in (
+        ("start_time", expected_start_time, None),
+        ("interval_seconds", expected_interval_seconds, DEFAULT_INTERVAL_SECONDS),
+        ("clear_history_on_start", expected_clear_history_on_start, 1),
+        ("clear_history_on_end", expected_clear_history_on_end, 1),
+    ):
+        # Legacy firmware remains usable with omitted options; explicit options must be echoed.
+        if expected is None and key not in result:
+            continue
+        value = expected if expected is not None else default
+        if value is not None and str(result.get(key)) != str(value):
+            raise RuntimeError("sim_result.ini {} does not match sim_config.ini".format(key))
+    if result.get("overall_status") == "success" and "start_time" in result:
+        try:
+            start = int(result["start_time"])
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("sim_result.ini has an invalid start_time") from exc
+        if not 1 <= start <= UINT32_MAX - MAX_CSV_ROWS - 1:
+            raise RuntimeError("sim_result.ini has an invalid start_time")
     samples = result.get("samples")
     if expected_sample_count and (not isinstance(samples, list) or len(samples) != expected_sample_count):
         raise RuntimeError("sim_result.ini sample entries do not match sim_config.ini")

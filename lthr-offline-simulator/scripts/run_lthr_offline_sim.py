@@ -17,7 +17,12 @@ from shared.deploy_utils import (
 from shared.offline_sim_runner import (
     run_sample_flow,
 )
-from shared.offline_sim_contract import make_run_id
+from shared.offline_sim_contract import (
+    add_simulation_arguments,
+    make_run_id,
+    simulation_options_from_args,
+    validate_simulation_options,
+)
 from shared.jira_utils import (
     MultiAttachmentModeRequiredError,
     resolve_issue_sample_inputs,
@@ -80,6 +85,7 @@ def main() -> int:
     parser.add_argument("--mgr-port", default="", help="Explicit MGR port when multiple devices are connected")
     parser.add_argument("--uart-port", default="", help="Explicit UART port when multiple devices are connected")
     parser.add_argument("--rounds", type=int, default=1, help="C-side rounds in this single UTest invocation (default: 1)")
+    add_simulation_arguments(parser)
     parser.add_argument("--skip-jira", action="store_true", help="Skip all Jira communication (offline mode, results saved locally only)")
     parser.add_argument("--csv-path", default="", help="Local CSV file path (bypass Jira download, implies --skip-jira)")
     parser.add_argument("--boot-timeout-sec", type=int, default=180, help="Timeout waiting for ready screen logs")
@@ -93,6 +99,7 @@ def main() -> int:
     parser.add_argument("--model-name", default="", help="Model name for report signature")
     parser.add_argument("--reasoning-effort", default="", help="Reasoning effort for report signature")
     args = parser.parse_args()
+    simulation_options = simulation_options_from_args(args)
 
     if args.rounds <= 0:
         raise RuntimeError("--rounds must be greater than 0")
@@ -100,6 +107,13 @@ def main() -> int:
         parser.error("--csv-path cannot be combined with Jira attachment selection options")
     if args.csv_name and (args.all_csvs or args.multi_attachment_mode):
         parser.error("--csv-name selects one attachment and cannot be combined with multi-attachment options")
+    try:
+        validate_simulation_options(
+            "single_person_multi_sample" if args.multi_attachment_mode == "single_person_multi_sample" else "single_sample",
+            **simulation_options,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
     effective_disk_root, disk_root_notice = normalize_disk_root_for_wsl(args.disk_root)
     if disk_root_notice:
@@ -211,6 +225,7 @@ def main() -> int:
             deploy_attempts=args.deploy_attempts,
             deploy_only=args.deploy_only,
             deploy_hook=_deploy_group,
+            **simulation_options,
         )
         flow_status = str(flow_summary.get("status", "failed"))
         run_statuses.append(flow_status)
@@ -244,6 +259,8 @@ def main() -> int:
                 "gomore_root": sample_summary.get("gomore_root", flow_summary.get("gomore_root", "")),
                 "result_path": flow_summary.get("result_path", ""),
                 "history_paths": flow_summary.get("history_paths", []),
+                "simulation_config": flow_summary.get("simulation_config", simulation_options),
+                "simulation_result": flow_summary.get("result", {}),
                 "device_data_sample_cleared": flow_summary.get("data_sample_cleared", False),
                 "error": flow_summary.get("error", ""),
             })
@@ -298,6 +315,7 @@ def main() -> int:
         )
     json_payload["attachment_run_mode"] = attachment_run_mode
     json_payload["simulation_mode"] = c_mode
+    json_payload["simulation_config"] = simulation_options
     json_payload["has_trend_analysis"] = has_trend_analysis
     update_metrics(
         json_payload,

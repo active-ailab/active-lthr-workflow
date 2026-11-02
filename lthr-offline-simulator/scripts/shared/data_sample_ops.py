@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence
 
 from .jira_utils import CSV_TIMESTAMP_RE
 from .watchlink_runtime import (
@@ -187,6 +187,10 @@ def extract_simulation_artifacts(
     rounds: int,
     sample_count: int,
     output_dir: Path,
+    start_time: Optional[int] = None,
+    interval_seconds: Optional[int] = None,
+    clear_history_on_start: Optional[int] = None,
+    clear_history_on_end: Optional[int] = None,
 ) -> Dict[str, object]:
     """Copy this run's result/history locally; clear data_sample only after a validated full success."""
     root = ensure_local_mount_root(Path(data_root))
@@ -206,6 +210,10 @@ def extract_simulation_artifacts(
             expected_mode=mode,
             expected_rounds=rounds,
             expected_sample_count=sample_count,
+            expected_start_time=start_time,
+            expected_interval_seconds=interval_seconds,
+            expected_clear_history_on_start=clear_history_on_start,
+            expected_clear_history_on_end=clear_history_on_end,
         )
     except Exception as exc:
         validation_error = exc

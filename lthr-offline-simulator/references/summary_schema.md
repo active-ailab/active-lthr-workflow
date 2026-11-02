@@ -1,5 +1,7 @@
 # Summary Schema
 
+Owner: cs-dongqi@zepp.com / Organization: Active.Bu
+
 自动报告消费端优先读取统一的公共字段，而不是依赖每个脚本各自的历史字段名。
 
 ## 顶层公共字段
@@ -16,6 +18,8 @@
 - `issue`: 仅单样本/Jira 链路需要时填充
 - `attachment_run_mode`: Jira 多附件处理方式；`single_attachment`、`sequential` 或 `single_person_multi_sample`
 - `simulation_mode`: C 端配置模式，例如 `single_sample` 或 `single_person_multi_sample`
+- `simulation_config`: 四个请求参数 `start_time`、`interval_seconds`、`clear_history_on_start`、`clear_history_on_end`；`null` 表示未指定，由 C 端采用默认值。JSON 不把主机当前时间当作设备默认起始时间。
+- `simulation.result`（本地入口）/ `samples[].simulation_result`（Jira 入口）：C 端结果字段及实际配置回显；`start_time` 为实际起点，`original_history_file` 为结束保留仿真历史时的原 his 归档路径，无原文件时为空。
 - `metrics.utest_invocations`: 本次外层工作流实际启动的 UTest 次数；deploy-only 为 0
 
 ## 兼容策略

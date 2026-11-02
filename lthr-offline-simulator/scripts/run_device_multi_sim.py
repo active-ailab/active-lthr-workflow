@@ -17,7 +17,13 @@ from shared.deploy_utils import (
     LTHR_OUTPUT_ROOT,
     housekeep_output,
 )
-from shared.offline_sim_contract import collect_sample_paths, make_run_id
+from shared.offline_sim_contract import (
+    add_simulation_arguments,
+    collect_sample_paths,
+    make_run_id,
+    simulation_options_from_args,
+    validate_simulation_options,
+)
 from shared.offline_sim_runner import run_sample_flow
 from shared.multi_sim_support import (
     init_img_only_summary,
@@ -103,6 +109,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "multi_person_multi_sample",
     ))
     parser.add_argument("--rounds", type=int)
+    add_simulation_arguments(parser)
     parser.add_argument("--boot-timeout-sec", type=int, default=180)
     parser.add_argument("--mount-wait-sec", type=int, default=30)
     parser.add_argument("--run-timeout-sec", type=int, default=72000)
@@ -116,6 +123,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--img-mount-wait-sec", type=int, default=30)
     parser.add_argument("--img-extract-delay-sec", type=int, default=30)
     args = parser.parse_args(argv)
+    simulation_options = simulation_options_from_args(args)
+    if args.img_only:
+        if any(value is not None for value in simulation_options.values()):
+            parser.error("仿真时间及 his 配置不能与 --img-only 合用")
+    else:
+        if not args.mode:
+            parser.error("运行仿真时必须显式指定 --mode")
+        if args.rounds is None or args.rounds <= 0:
+            parser.error("运行仿真时必须显式指定正整数 --rounds")
+        try:
+            validate_simulation_options(args.mode, **simulation_options)
+        except ValueError as exc:
+            parser.error(str(exc))
 
     if _is_wsl_environment():
         ensure_wsl_windows_bridge(force=True)
@@ -147,11 +167,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"[完成] JSON 摘要: {result['json_path']}")
         return 0
 
-    if not args.mode:
-        parser.error("运行仿真时必须显式指定 --mode")
-    if args.rounds is None or args.rounds <= 0:
-        parser.error("运行仿真时必须显式指定正整数 --rounds")
-
     local_data_sample = _resolve_data_sample(args)
     sample_files = collect_sample_paths(local_data_sample)
     if not sample_files:
@@ -177,6 +192,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "mode": args.mode,
         "rounds": args.rounds,
         "sample_count": len(sample_paths),
+        "simulation_config": simulation_options,
         "status": "deploying",
     })
     def _on_state(state: Dict[str, object], full_log: str) -> None:
@@ -222,6 +238,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         deploy_only=False,
         deploy_hook=_deploy,
         state_callback=_on_state,
+        **simulation_options,
     )
     temporary_storage.cleanup()
     summary_info.update({

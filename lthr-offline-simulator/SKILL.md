@@ -1,9 +1,11 @@
 ---
 name: lthr-offline-simulator
-description: "通过仓库内固定 Python 入口对 GoMore 离线 CSV 执行配置驱动仿真，并提取 C 端结果和历史归档；也用于乳酸阈引导测试目标心率区间/百分比计算。设备操作由 watchlink-v3 提供。触发词: gomore offline csv test, data_sample, 单样本仿真, 多样本, 多轮仿真, utest, Jira回传, 乳酸阈引导测试, maxHr, restHr。"
+description: "通过仓库内固定 Python 入口对 GoMore 离线 CSV 执行配置驱动仿真，支持自定义起始时间、间隔与单样本仿真前后 his 清理，并提取 C 端结果和历史归档；也用于乳酸阈引导测试目标心率区间/百分比计算。设备操作由 watchlink-v3 提供。触发词: gomore offline csv test, data_sample, 单样本仿真, 多样本, 多轮仿真, utest, Jira回传, 乳酸阈引导测试, maxHr, restHr。"
 ---
 
 # LTHR Offline Simulator
+
+Owner: cs-dongqi@zepp.com / Organization: Active.Bu
 
 本 skill 只负责选择和调用固定脚本入口、准备调用参数并说明输出位置。仿真配置、设备部署、UTest 调用、结果校验和产物提取均由 `scripts/` 中的 Python 流程实现；不要在 skill 步骤里直接拼接 UART UTest 命令或手工重复仿真。
 
@@ -13,6 +15,22 @@ description: "通过仓库内固定 Python 入口对 GoMore 离线 CSV 执行配
 - 乳酸阈引导测试的心率区间公式见 `references/guide_test_hr_ranges.md`。
 - 通用串口、WSL bridge、端口配对、刷机和设备排障使用 `watchlink-v3`。
 - 多样本仿真必须使用本地 `data_sample` 目录，并显式给出 `--mode` 与 `--rounds`。不要根据目录名推断样本是否属于同一人。
+
+## 时间与 his 配置
+
+下列参数由所有仿真入口共用，批量入口原样透传给每个 issue：
+
+| 参数 | 适用模式 | 默认值与含义 |
+|---|---|---|
+| `--start-time <Unix秒>` | 全部 | 省略时由 C 端读取仿真启动时的设备当前时间；指定值为 Unix UTC 秒时间戳 |
+| `--interval-seconds <秒>` | 全部 | 默认 `86400`（24 小时）；指相邻仿真起点的间隔，不是实际等待时间 |
+| `--clear-history-on-start {0,1}` | 仅 `single_sample` | 默认 `1`：隔离原 his、从空历史开始；`0`：复制原 his 供仿真继续累积 |
+| `--clear-history-on-end {0,1}` | 仅 `single_sample` | 默认 `1`：归档仿真 his 后恢复原 his；`0`：归档副本并保留活动 his 供下次继续 |
+
+时间与间隔必须是 `1..4294967295` 的整数；指定起始时间时，Python 会按 C 端的 20000 条数据及结束时间余量预检完整时间轴，最终仍由 C 端校验。
+两个 his 开关独立生效，其他模式填写任意一个（包括 `1`）都会报错。复用历史时，应给出晚于已有历史的起始时间；Python 不解析 his，也不自动推断下次时间。
+结束保留时，原 his 会另存为 `gomore_his_<run_id>_original.data`，仿真 his 保留在活动路径，两份归档均会提取到本地产物目录。
+省略新参数时 INI 不写对应项，沿用固件默认值；显式指定时要求固件支持并在结果中回显，缺失或不匹配按失败处理。
 
 ## 固定脚本入口
 
@@ -31,6 +49,15 @@ python3 scripts/run_lthr_offline_sim.py ITS-51497 --csv-name gomore_data_2026102
 
 ```bash
 python3 scripts/run_lthr_offline_sim.py ITS-51497 --csv-path /path/to/gomore_data_20261027_120000.csv --skip-jira --rounds 3
+```
+
+自定义时间并保留单样本累积历史：
+
+```bash
+python3 scripts/run_lthr_offline_sim.py ITS-51497 \
+  --csv-path /path/to/gomore_data_20261027_120000.csv --rounds 3 \
+  --start-time 1793577600 --interval-seconds 43200 \
+  --clear-history-on-start 0 --clear-history-on-end 0
 ```
 
 - 单附件输入（`--csv-name` 或 `--csv-path`）使用 `single_sample`；`--rounds` 默认为 1，必须大于 0。
@@ -59,7 +86,7 @@ python3 scripts/run_lthr_offline_sim.py ITS-51497 --all-csvs --multi-attachment-
 python3 scripts/run_device_multi_sim.py \
   --data-dir /path/to/data_sample \
   --mode single_person_multi_sample \
-  --rounds 3
+  --rounds 3 --start-time 1793577600 --interval-seconds 43200
 ```
 
 `--data-dir` 必须指向 case 目录的父级 `data_sample`，例如 `data_sample/BASE_CASE/<sample>/gomore_data_*.csv`。如果从飞书只下载 `BASE_CASE` 文件夹的内容，先在本地 `data_sample/BASE_CASE/` 下还原这一层，再把 `data_sample/` 传给 `--data-dir`；不要直接把 `data_sample/BASE_CASE/` 传入。否则 UTest 日志会把样本标为 `ROOT_CASE`，报告侧的 `--case BASE_CASE` 不会提取到这些样本。
@@ -68,12 +95,12 @@ python3 scripts/run_device_multi_sim.py \
 
 | `--mode` | 样本关系 | 执行含义 |
 |---|---|---|
-| `single_sample` | 单人、单样本 | 同一样本按轮次运行，轮次间时间戳推进一天 |
-| `single_person_multi_sample` | 单人、多样本 | 轮次优先、每轮遍历所有样本；每个“轮次×样本”推进一天 |
-| `multi_person_multi_sample` | 多人、多样本 | 样本优先、每个样本跑完所有轮次；样本切换不推进时间戳，只有轮次推进一天 |
+| `single_sample` | 单人、单样本 | 同一样本按轮次运行，轮次间推进一次配置间隔（默认一天） |
+| `single_person_multi_sample` | 单人、多样本 | 轮次优先、每轮遍历所有样本；每个“轮次×样本”推进一次配置间隔 |
+| `multi_person_multi_sample` | 多人、多样本 | 样本优先、每个样本跑完所有轮次；样本切换回到同一起点，仅各自轮次推进配置间隔 |
 
 `single_person_multi_sample` 和 `multi_person_multi_sample` 至少需要两个样本。输入样本按相对路径排序后写入配置；仅文件名匹配 `gomore_data_*.csv` 的文件进入样本清单。`base_case_updates_*` 作为元数据保留，不作为样本。
-C 端在 UTest 开始时读取设备时间建立本次时间基准；具体时间戳生成由固定 C 实现负责，skill 不要求调用者手工改写样本时间戳。
+未指定 `--start-time` 时由 C 端在 UTest 开始时读取设备时间；指定后直接使用该值，不依赖设备读时钟。具体时间戳生成由 C 端负责，不改写 CSV 时间戳、不修改设备时钟。
 
 ### 部署式 UTest 入口
 
@@ -91,27 +118,31 @@ python3 scripts/run_utest_only.py \
 ### Jira 批量入口
 
 ```bash
-python3 scripts/run_lthr_batch.py --issues ITS-51497 ITS-51498 --rounds 3 --continue-on-error
+python3 scripts/run_lthr_batch.py --issues ITS-51497 ITS-51498 --rounds 3 \
+  --start-time 1793577600 --interval-seconds 43200 --continue-on-error
 ```
 
 批量脚本串行调用 `run_lthr_offline_sim.py`；每个 issue 都是独立外层仿真。轮次参数为 `--rounds`，旧 `--runs` 和 `--clean-between-runs` 不再使用。
+Jira 逐附件串行和批量 issue 的每份配置都使用同一组时间参数，Python 不在配置之间自动推进起始时间。若关闭开始/结束清理，后续配置会复用前次保留的活动 his；需要独立历史时保留默认清理设置。
 
 ## 固定仿真流程
 
 对每次外层调用，固定脚本完成以下操作：
 
 1. 收集本次有效 `gomore_data_*.csv`，在系统临时目录创建隔离的 `data_sample` staging；仿真结束后清理，不留在产物目录。
-2. 生成唯一 `run_id` 和 `sim_config.ini`。`sample_count` 及样本顺序以写入配置为准。
+2. 生成唯一 `run_id` 和 `sim_config.ini`，写入显式指定的四个新配置。`sample_count` 及样本顺序以写入配置为准。
 3. 将 staging 内容部署到设备 `/storage/sport/gomore/data_sample/`；部署时不预清理，以免仿真失败前丢失现场。
 4. 设备就绪后只发送一次 `utest gomore_offline_csv_sim_tests`，等待 C 端完成配置中全部样本和轮次。
 5. 看到 UTest 结束标记后，提取 `sim_result.ini` 和本次 `run_id` 对应的 `gomore_his_<run_id>*.data`，校验结果并直接保存到本地输出目录。逐附件串行产生多次 UTest 时，仅将各次固定名结果文件放在 `runs/<run_id>/`，避免互相覆盖。
 6. 仅当结果校验通过且 C 端 `overall_status=success` 时，脚本在产物提取后清空设备 `data_sample` 的全部内容，并验证目录为空。仿真部分完成、失败、未观察到 UTest 结束标记或提取校验失败时，保留输入 CSV 和配置供排查。
 
 Python 不在样本或轮次之间重复启动 UTest，也不删除 `gomore_his.data` 或 `gomore_his.data.bak`。历史状态备份、仿真历史恢复和本次归档由 C UTest 管理。
+`--clear-history-on-end 0` 保留的活动 his 位于 `data_sample` 外，成功后的输入目录清理不会删除它。复制或归档失败时，C 端按结果文件记录错误并保留可恢复数据。
 
 ## 结果判断
 
 - `sim_result.ini` 的 `version`、`run_id`、`mode`、`rounds` 和 `sample_count` 必须匹配本次配置。
+- 显式指定的 `start_time`、`interval_seconds`、`clear_history_on_start`、`clear_history_on_end` 必须逐项匹配结果回显。未指定时，若新固件回显间隔或开关，必须与默认值一致；默认起始时间以 C 端回显为准。校验不通过时不清空设备输入目录。
 - 最终状态以 C 端 `overall_status` 和每样本状态为准：`success`、`partial`、`failed`。`partial`/`failed` 会保留已提取产物、输出明确错误并以非零状态退出。
 - 单个多人样本异常时，C 端结果文件记录异常样本及停止轮次；脚本保留该样本状态和历史归档，并继续报告其他样本结果。
 - 乳酸阈数值无效或未输出，不代表仿真执行失败。阈值字段只从最终算法 UART/IMG 日志解析；状态仍按结果文件判断。
@@ -120,6 +151,7 @@ Python 不在样本或轮次之间重复启动 UTest，也不删除 `gomore_his.
 ## 日志与产物
 
 脚本记录完整 UART 原始日志、JSON 摘要、Markdown 报告（适用时）、`sim_result.ini` 副本和历史归档副本，均直接放在本次产物目录中；临时输入副本不保留。显式传入 `run_device_multi_sim.py --output-dir` 时，该路径就是最终产物目录；省略时保留默认的 `run_id` 隔离子目录。运行命令会打印最终产物绝对路径。多样本流程可用 `--with-img-extract` 附加提取 IMG 日志；它不改变仿真入口或 UTest 次数。
+JSON 的 `simulation_config` 保存本次请求参数（`null` 表示未指定）；C 端解析后的实际值保存在仿真 `result`，Jira 链路为各样本的 `simulation_result`，同时可从 `sim_result.ini` 核对。
 
 ## 维护
 

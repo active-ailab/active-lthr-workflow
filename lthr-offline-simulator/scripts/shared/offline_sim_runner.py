@@ -201,13 +201,22 @@ def run_sample_flow(
     deploy_hook_wsl: Optional[DeployHook] = None,
     state_callback: Optional[Callable[[Dict[str, object], str], None]] = None,
     device_artifacts_dir: Optional[Path] = None,
+    start_time: Optional[int] = None,
+    interval_seconds: Optional[int] = None,
+    clear_history_on_start: Optional[int] = None,
+    clear_history_on_end: Optional[int] = None,
 ) -> Tuple[Dict[str, object], str]:
+    simulation_options = dict(
+        start_time=start_time, interval_seconds=interval_seconds,
+        clear_history_on_start=clear_history_on_start, clear_history_on_end=clear_history_on_end,
+    )
     write_config(
         data_sample_dir,
         run_id=run_id,
         mode=mode,
         rounds=rounds,
         sample_paths=sample_paths,
+        **simulation_options,
     )
     raw_sections: List[str] = []
     gomore_root_text, deploy_log = deploy_data_to_device(
@@ -238,6 +247,7 @@ def run_sample_flow(
             "mode": mode,
             "rounds": rounds,
             "sample_count": len(sample_paths),
+            "simulation_config": simulation_options,
             "status": "deploy_only",
             "results": [],
             "stability": "deploy-only 检查通过（已跳过 UART utest）",
@@ -266,6 +276,7 @@ def run_sample_flow(
             rounds=rounds,
             sample_count=len(sample_paths),
             output_dir=device_artifacts_dir,
+            **simulation_options,
         )
         if info.get("validation_error"):
             info["extraction_error"] = info["validation_error"]
@@ -307,6 +318,10 @@ def run_sample_flow(
                     expected_mode=mode,
                     expected_rounds=rounds,
                     expected_sample_count=len(sample_paths),
+                    expected_start_time=start_time,
+                    expected_interval_seconds=interval_seconds,
+                    expected_clear_history_on_start=clear_history_on_start,
+                    expected_clear_history_on_end=clear_history_on_end,
                 )
             except Exception as exc:
                 extraction_info["extraction_error"] = str(exc)
@@ -361,6 +376,7 @@ def run_sample_flow(
         "mode": mode,
         "rounds": rounds,
         "sample_count": len(sample_paths),
+        "simulation_config": simulation_options,
         "gomore_root": gomore_root_text,
         "status": overall_status,
         "utest_status": utest_state.get("status"),
